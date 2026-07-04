@@ -10,10 +10,17 @@ add_executable(app_profile
     thread_fd_sampler.c
     io_sampler.c
     report.c
+    sign.c
 )
 
 target_include_directories(app_profile PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_compile_options(app_profile PRIVATE -Wall -Wextra -O2 -D_GNU_SOURCE)
-target_link_libraries(app_profile PRIVATE pthread)
+target_link_libraries(app_profile PRIVATE pthread crypto)
 
 install(TARGETS app_profile RUNTIME DESTINATION /opt/tbox/test)
+
+add_executable(csv_verify csv_verify.c sign.c)
+target_include_directories(csv_verify PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_options(csv_verify PRIVATE -Wall -Wextra -O2 -D_GNU_SOURCE)
+target_link_libraries(csv_verify PRIVATE crypto)
+install(TARGETS csv_verify RUNTIME DESTINATION /opt/tbox/test)

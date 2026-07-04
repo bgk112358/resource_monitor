@@ -13,6 +13,7 @@
  */
 #define _GNU_SOURCE
 #include "sampler.h"
+#include "sign.h"
 #include <pthread.h>
 
 /* ── 并发采样参数 ──────────────────────────────── */
@@ -116,6 +117,13 @@ int main(int argc, char *argv[]) {
     if (fio)  pthread_join(t_io,  NULL);
 
     fclose(fcpu); fclose(fmem); fclose(fthr); fclose(fio);
+
+    /* ── 签名为防伪 ──────────────────────────── */
+    char csv_path[MAX_PATH];
+    snprintf(csv_path, sizeof(csv_path), "%s/cpu.csv", outdir);        sign_file(csv_path);
+    snprintf(csv_path, sizeof(csv_path), "%s/mem.csv", outdir);        sign_file(csv_path);
+    snprintf(csv_path, sizeof(csv_path), "%s/threads_fd.csv", outdir); sign_file(csv_path);
+    snprintf(csv_path, sizeof(csv_path), "%s/io.csv", outdir);         sign_file(csv_path);
 
     /* ── 合并快照 ──────────────────────────── */
     ResourceSnapshot snap;
