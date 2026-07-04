@@ -15,7 +15,9 @@ resource_monitor/
 │   ├── src/stability_monitor/   # C 版 24h 稳定性监控
 │   ├── src/system_stress/       # C 版系统压力负载生成器
 │   ├── scripts/                 # Shell 版测试脚本 (4 个)
-│   ├── python/plot_profile.py   # CSV → 柱状图 HTML (零依赖)
+│   ├── python/
+│   │   ├── plot_profile.py      # CSV → 柱状图 HTML (零依赖)
+│   │   └── plot_gui.py          # tkinter GUI 本地客户端
 │   ├── dummy_app/               # C 版模拟测试应用 (CMake + ARM 交叉编译)
 │   └── README.md                # 详细使用手册
 │
@@ -65,11 +67,14 @@ PID=$(cat /tmp/dummy_app.pid)
 ./src/build/app_profile $PID 15 /tmp/my_test
 ```
 
-### 3. 生成柱状图
+### 3. 可视化 (二选一)
 
 ```bash
+# HTML 版: 浏览器查看
 python3 python/plot_profile.py /tmp/my_test_${PID}_*
-# → 浏览器打开 /tmp/my_test_.../chart.html
+
+# GUI 版: tkinter 窗口直接显示 (需 apt install python3-tk)
+python3 python/plot_gui.py /tmp/my_test_${PID}_*
 ```
 
 ### 4. 运行单元测试

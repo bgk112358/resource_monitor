@@ -50,35 +50,35 @@ def read_csv(path, skip_header=True):
     """读取 CSV, 返回 [(x, y), ...]; 跳过 # 开头的签名行"""
     rows = []
     with open(path, 'r') as f:
-        reader = csv.reader(f)
-        if skip_header:
-            next(reader, None)
-        for i, row in enumerate(reader):
-            if not row or row[0].startswith('#'):
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
+            parts = line.split(',')
             try:
-                val = float(row[1]) if len(row) > 1 else float(row[0])
-                rows.append((i + 1, val))
+                val = float(parts[1]) if len(parts) > 1 else float(parts[0])
+                rows.append(val)
             except (ValueError, IndexError):
-                continue
+                pass
+    # header line fails float parse, so first row is first data point
     return rows
 
 def read_csv_multi(path):
-    """读取多列 CSV, 返回 [(x1,y1,z1), ...]; 跳过 # 开头的签名行"""
-    rows, rows2 = [], []
+    """读取多列 CSV, 返回 ([y1,...], [z1,...]); 跳过 # 开头的签名行"""
+    a, b = [], []
     with open(path, 'r') as f:
-        reader = csv.reader(f)
-        next(reader, None)  # skip header
-        for i, row in enumerate(reader):
-            if not row or row[0].startswith('#'):
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith('#'):
                 continue
+            parts = line.split(',')
             try:
-                if len(row) >= 3:
-                    rows.append((i + 1, float(row[1])))
-                    rows2.append((i + 1, float(row[2])))
+                if len(parts) >= 3:
+                    a.append(float(parts[1]))
+                    b.append(float(parts[2]))
             except (ValueError, IndexError):
-                continue
-    return rows, rows2
+                pass
+    return a, b
 
 def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None, ymax_override=None):
     """将 [(x,y),...] 渲染为 inline SVG 柱状图。
@@ -101,7 +101,7 @@ def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None, ymax_override
     elif ymax <= 100: ymax = ((int(ymax) // 10) + 1) * 10
     else: ymax = ((int(ymax) // 100) + 1) * 100
 
-    margin_l, margin_r, margin_t, margin_b = 52, 20, 26, 40
+    margin_l, margin_r, margin_t, margin_b = 52, 20, 38, 40
     pw = width - margin_l - margin_r
     ph = height - margin_t - margin_b
 
@@ -192,10 +192,14 @@ def build_html(profile_dir):
         fpath = os.path.join(profile_dir, fname)
         sig_results[key] = verify_csv_signature(fpath) if os.path.exists(fpath) else (None, None)
 
-    cpu_data   = read_csv(os.path.join(profile_dir, "cpu.csv"))
-    mem_data   = read_csv(os.path.join(profile_dir, "mem.csv"))
-    thr_data, fd_data = read_csv_multi(os.path.join(profile_dir, "threads_fd.csv"))
-    io_r_data, io_w_data = read_csv_multi(os.path.join(profile_dir, "io.csv"))
+    cpu_data   = [(i+1, v) for i, v in enumerate(read_csv(os.path.join(profile_dir, "cpu.csv")))]
+    mem_data   = [(i+1, v) for i, v in enumerate(read_csv(os.path.join(profile_dir, "mem.csv")))]
+    thr_raw, fd_raw = read_csv_multi(os.path.join(profile_dir, "threads_fd.csv"))
+    thr_data   = [(i+1, v) for i, v in enumerate(thr_raw)]
+    fd_data    = [(i+1, v) for i, v in enumerate(fd_raw)]
+    ior_raw, iow_raw = read_csv_multi(os.path.join(profile_dir, "io.csv"))
+    io_r_data  = [(i+1, v) for i, v in enumerate(ior_raw)]
+    io_w_data  = [(i+1, v) for i, v in enumerate(iow_raw)]
 
     w, h = 500, 260
 

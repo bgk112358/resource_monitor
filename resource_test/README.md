@@ -320,6 +320,55 @@ PID:       346087
 
 ---
 
+---
+
+## Python 可视化工具（`python/`）
+
+### 柱状图 HTML 生成 (`plot_profile.py`)
+
+读取 CSV → 生成自包含 HTML，6 幅柱状图 + HMAC 签名验证。
+
+```bash
+python3 plot_profile.py /tmp/test_xxx_12345_20260704_152516
+# → 浏览器打开 /tmp/test_xxx_.../chart.html
+```
+
+### 本地 GUI 客户端 (`plot_gui.py`)
+
+tkinter 窗口直接显示柱状图，无需浏览器，含签名校验。
+
+```bash
+# 依赖: apt install python3-tk (一次性)
+python3 plot_gui.py /tmp/test_xxx_12345_20260704_152516
+```
+
+弹出 2×3 网格窗口，每幅图上显示签名状态：
+
+| 状态 | 颜色 | 提示 |
+|------|:---:|------|
+| 签名有效 | — | 不显示 |
+| 签名无效 | 🔴 | ⚠ 签名无效 — 数据可能被篡改 |
+| 无签名 | 🟠 | ⚠ 无签名 — 无法核实真伪 |
+
+`Ctrl+Q` 或 `Esc` 退出。
+
+### CSV 签名验证 (`csv_verify`)
+
+验证 CSV 文件是否被篡改：
+
+```bash
+./csv_verify /tmp/test_xxx/          # 验证目录下所有 CSV
+./csv_verify /tmp/test_xxx/cpu.csv   # 验证单个文件
+```
+
+输出示例：
+```
+✅ cpu.csv          签名有效
+❌ mem.csv          签名不匹配 — 数据可能被篡改!
+```
+
+---
+
 ## 适用场景
 
 ### 🟢 应用级测试（测具体进程）
