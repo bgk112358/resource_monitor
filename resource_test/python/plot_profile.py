@@ -8,16 +8,54 @@ plot_profile.py — 读取 app_profile CSV 输出, 生成 4 合 1 折线图 HTML
 
 输出: <profile_dir>/chart.html — 用浏览器打开即可查看
 """
-import sys, os, csv
+import sys, os, csv, hmac, hashlib
+
+# ── HMAC 签名验证 ──────────────────────────────────
+# 与 sign.c 中的 SIGN_KEY 必须一致
+SIGN_KEY = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+
+def verify_csv_signature(path):
+    """验证 CSV 文件的 HMAC 签名。返回 (valid: bool, message: str)"""
+    try:
+        with open(path, 'rb') as f:
+            content = f.read()
+
+        # 查找签名行
+        sig_marker = b"\n# SIG:HMAC-SHA256:"
+        idx = content.find(sig_marker)
+        if idx == -1:
+            return None, None   # 无签名, 不提示
+
+        # 提取签名值 (64 hex chars)
+        sig_start = idx + len(sig_marker)
+        sig_end = content.find(b'\n', sig_start)
+        if sig_end == -1:
+            sig_end = len(content)
+        expected_sig = content[sig_start:sig_end].decode().strip()
+
+        # 被签名的正文 = 签名行之前的内容 (包括签名行前那个 \n)
+        signable = content[:idx + 1]
+
+        # 重算 HMAC
+        computed = hmac.new(SIGN_KEY, signable, hashlib.sha256).hexdigest()
+
+        if computed == expected_sig:
+            return True, None
+        else:
+            return False, "签名不匹配"
+    except Exception as e:
+        return False, str(e)
 
 def read_csv(path, skip_header=True):
-    """读取 CSV, 返回 [(x, y), ...]"""
+    """读取 CSV, 返回 [(x, y), ...]; 跳过 # 开头的签名行"""
     rows = []
     with open(path, 'r') as f:
         reader = csv.reader(f)
         if skip_header:
             next(reader, None)
         for i, row in enumerate(reader):
+            if not row or row[0].startswith('#'):
+                continue
             try:
                 val = float(row[1]) if len(row) > 1 else float(row[0])
                 rows.append((i + 1, val))
@@ -26,12 +64,14 @@ def read_csv(path, skip_header=True):
     return rows
 
 def read_csv_multi(path):
-    """读取多列 CSV, 返回 [(x1,y1,z1), ...]; 用于 threads_fd (x,threads,fd) 或 io (x,read,write)"""
+    """读取多列 CSV, 返回 [(x1,y1,z1), ...]; 跳过 # 开头的签名行"""
     rows, rows2 = [], []
     with open(path, 'r') as f:
         reader = csv.reader(f)
         next(reader, None)  # skip header
         for i, row in enumerate(reader):
+            if not row or row[0].startswith('#'):
+                continue
             try:
                 if len(row) >= 3:
                     rows.append((i + 1, float(row[1])))
@@ -40,8 +80,10 @@ def read_csv_multi(path):
                 continue
     return rows, rows2
 
-def svg_bar_chart(data, width, height, color, ylabel, ymax_override=None):
-    """将 [(x,y),...] 渲染为 inline SVG 柱状图"""
+def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None, ymax_override=None):
+    """将 [(x,y),...] 渲染为 inline SVG 柱状图。
+    sig_ok: None=无签名不提示, True=签名有效不提示, False=签名无效显示警告
+    """
     if not data or len(data) < 1:
         return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="{height//2}" text-anchor="middle" fill="#888">No data</text></svg>'
 
@@ -99,9 +141,26 @@ def svg_bar_chart(data, width, height, color, ylabel, ymax_override=None):
             bx = margin_l + (x - xmin) / (xmax - xmin + 1) * pw + bar_w * 0.25 + bar_w / 2
             x_labels += f'<text x="{bx:.1f}" y="{height-margin_b+16}" text-anchor="middle" fill="#888" font-size="9">{x}</text>'
 
+    # 签名状态提示
+    warning = ''
+    title_y = 16
+    if sig_ok is False:
+        warning = f'''
+    <rect x="0" y="0" width="{width}" height="22" fill="#f8514933" rx="0"/>
+    <text x="{width//2}" y="15" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">⚠ 签名验证失败 — 数据可能被篡改</text>
+    '''
+        title_y = 36
+    elif sig_ok is None:
+        warning = f'''
+    <rect x="0" y="0" width="{width}" height="22" fill="#d2991d33" rx="0"/>
+    <text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无签名数据 — 无法核实数据真伪</text>
+    '''
+        title_y = 36
+
     return f'''<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg">
     <rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/>
-    <text x="{width//2}" y="16" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>
+    <text x="{width//2}" y="{title_y}" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>
+    {warning}
     {grid_lines}
     {y_labels}
     {x_labels}
@@ -121,7 +180,18 @@ def build_html(profile_dir):
                     proc_name = line.split(":")[-1].strip()
                     break
 
-    # 读取 4 个 CSV
+    # 读取 4 个 CSV + 验证签名
+    csv_files = {
+        'cpu':          'cpu.csv',
+        'mem':          'mem.csv',
+        'threads_fd':   'threads_fd.csv',
+        'io':           'io.csv',
+    }
+    sig_results = {}
+    for key, fname in csv_files.items():
+        fpath = os.path.join(profile_dir, fname)
+        sig_results[key] = verify_csv_signature(fpath) if os.path.exists(fpath) else (None, None)
+
     cpu_data   = read_csv(os.path.join(profile_dir, "cpu.csv"))
     mem_data   = read_csv(os.path.join(profile_dir, "mem.csv"))
     thr_data, fd_data = read_csv_multi(os.path.join(profile_dir, "threads_fd.csv"))
@@ -129,13 +199,18 @@ def build_html(profile_dir):
 
     w, h = 500, 260
 
+    def sig_flag(key):
+        """None=无签名, True=有效, False=无效"""
+        r = sig_results.get(key)
+        return r[0] if r else None
+
     charts = [
-        ('CPU (%)',        'cpu',     svg_bar_chart(cpu_data, w, h, '#58a6ff', 'CPU Usage (%)')),
-        ('Memory RSS (KB)', 'mem',    svg_bar_chart(mem_data, w, h, '#3fb950', 'Memory RSS (KB)')),
-        ('Threads',         'thr',    svg_bar_chart(thr_data, w, h, '#f0883e', 'Thread Count')),
-        ('File Descriptors','fd',     svg_bar_chart(fd_data, w, h, '#d2a8ff', 'Open File Descriptors')),
-        ('IO Read (KB/s)',  'io_r',   svg_bar_chart(io_r_data, w, h, '#f85149', 'IO Read Throughput (KB/s)')),
-        ('IO Write (KB/s)', 'io_w',   svg_bar_chart(io_w_data, w, h, '#f59e0b', 'IO Write Throughput (KB/s)')),
+        ('CPU (%)',        'cpu',     svg_bar_chart(cpu_data, w, h, '#58a6ff', 'CPU Usage (%)',          sig_ok=sig_flag('cpu'))),
+        ('Memory RSS (KB)', 'mem',    svg_bar_chart(mem_data, w, h, '#3fb950', 'Memory RSS (KB)',         sig_ok=sig_flag('mem'))),
+        ('Threads',         'thr',    svg_bar_chart(thr_data, w, h, '#f0883e', 'Thread Count',             sig_ok=sig_flag('threads_fd'))),
+        ('File Descriptors','fd',     svg_bar_chart(fd_data, w, h, '#d2a8ff', 'Open File Descriptors',     sig_ok=sig_flag('threads_fd'))),
+        ('IO Read (KB/s)',  'io_r',   svg_bar_chart(io_r_data, w, h, '#f85149', 'IO Read Throughput (KB/s)',  sig_ok=sig_flag('io'))),
+        ('IO Write (KB/s)', 'io_w',   svg_bar_chart(io_w_data, w, h, '#f59e0b', 'IO Write Throughput (KB/s)', sig_ok=sig_flag('io'))),
     ]
 
     panels = ''
