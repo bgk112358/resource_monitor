@@ -25,8 +25,6 @@ extern "C" {
 /* ── 配置常量 ──────────────────────────────────── */
 #define DEFAULT_DURATION    30
 #define DEFAULT_OUTDIR      "/tmp/app_profile"
-#define CPU_SAMPLE_HZ       1
-#define MEM_SAMPLES         5
 #define MAX_PATH            512
 #define MAX_LINE            1024
 #define PROC_NAME_MAX       256

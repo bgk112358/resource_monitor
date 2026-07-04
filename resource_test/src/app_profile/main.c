@@ -34,27 +34,21 @@ static void *cpu_thread(void *arg) {
 /* ── 内存线程入口 ──────────────────────────────── */
 static void *mem_thread(void *arg) {
     SamplerArgs *a = (SamplerArgs *)arg;
-    int interval = a->duration / MEM_SAMPLES;
-    if (interval < 1) interval = 1;
-    mem_sampler_run(a->pid, MEM_SAMPLES, interval, a->snap, a->csv);
+    mem_sampler_run(a->pid, a->duration, 1, a->snap, a->csv);
     return NULL;
 }
 
 /* ── 线程+FD 线程入口 ──────────────────────────── */
 static void *thrfd_thread(void *arg) {
     SamplerArgs *a = (SamplerArgs *)arg;
-    int interval = a->duration / MEM_SAMPLES;
-    if (interval < 1) interval = 1;
-    thrfd_sampler_run(a->pid, MEM_SAMPLES, interval, a->snap, a->csv);
+    thrfd_sampler_run(a->pid, a->duration, 1, a->snap, a->csv);
     return NULL;
 }
 
 /* ── IO 线程入口 ────────────────────────────────── */
 static void *io_thread(void *arg) {
     SamplerArgs *a = (SamplerArgs *)arg;
-    int interval = a->duration / MEM_SAMPLES;
-    if (interval < 1) interval = 1;
-    io_sampler_run(a->pid, MEM_SAMPLES, interval, a->snap, a->csv);
+    io_sampler_run(a->pid, a->duration, 1, a->snap, a->csv);
     return NULL;
 }
 
