@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TBox 资源测试工具集</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0f172a;--card:#1e293b;--bd:#334155;--tx:#e2e8f0;--mu:#94a3b8;--ac:#38bdf8;--gr:#22c55e;--or:#f59e0b;--pk:#f472b6}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);line-height:1.7;max-width:900px;margin:0 auto;padding:48px 24px 80px}
+header{text-align:center;padding:32px 0 40px;border-bottom:1px solid var(--bd);margin-bottom:40px}
+header h1{font-size:2rem;color:#f8fafc;margin-bottom:6px}
+header p{color:var(--mu);font-size:1.05rem}
+.badge{display:inline-block;padding:2px 10px;border-radius:3px;font-size:.75rem;font-weight:600;margin-right:6px}
+.badge-app{background:#22c55e22;color:#22c55e;border:1px solid #22c55e44}
+.badge-sys{background:#38bdf822;color:#38bdf8;border:1px solid #38bdf844}
+h2{font-size:1.3rem;color:#f1f5f9;margin:32px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--bd)}
+h3{font-size:1.05rem;color:var(--ac);margin:16px 0 6px}
+p{margin:6px 0 10px;color:var(--mu)}
+table{border-collapse:collapse;width:100%;margin:14px 0 22px;font-size:.88rem}
+th,td{border:1px solid var(--bd);padding:8px 12px;text-align:left;vertical-align:top}
+th{background:var(--card);color:#e2e8f0;font-weight:600;font-size:.82rem}
+td{font-size:.85rem}
+tr:nth-child(even) td{background:#1e293b66}
+code{font-family:"Cascadia Code","Fira Code",monospace;font-size:.82rem;background:#1e293b;padding:2px 6px;border-radius:3px;color:#f472b6}
+pre{background:#0f172a;border:1px solid var(--bd);border-radius:6px;padding:14px 18px;margin:10px 0 16px;overflow-x:auto;font-size:.82rem;line-height:1.55}
+pre code{background:none;padding:0;color:#e2e8f0}
+.card{background:var(--card);border:1px solid var(--bd);border-radius:8px;padding:20px 24px;margin:16px 0}
+.card h3{margin-top:0;color:#f8fafc}
+.card p{color:var(--mu);margin:4px 0}
+.step{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--bd)}
+.step:last-child{border-bottom:none}
+.step-num{width:32px;height:32px;border-radius:50%;background:var(--ac);color:#0f172a;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:.9rem;flex-shrink:0}
+.step code{font-size:.78rem}
+.check{color:var(--gr)}
+.warn{color:var(--or)}
+.footer{text-align:center;padding:32px 0;color:var(--mu);font-size:.78rem;border-top:1px solid var(--bd);margin-top:48px}
+</style>
+</head>
+<body>
+
+<header>
+<h1>🧪 TBox 应用资源测试工具集</h1>
+<p>一键检测任意应用程序的 CPU、内存、IO、线程、文件描述符占用</p>
+<p style="margin-top:10px;font-size:.88rem">
+    <span class="badge badge-app">应用级</span> 给定 PID → 测量该进程资源
+    <span class="badge badge-sys">系统级</span> 自建负载 → 压测硬件平台
+</p>
+</header>
+
+<h2>📋 工具清单</h2>
+
+<table>
+<tr><th>工具</th><th>测试对象</th><th>一句话说明</th><th>输出</th></tr>
+<tr>
+    <td><code>app_profile</code></td>
+    <td><span class="badge badge-app">应用级</span></td>
+    <td>给定 PID，几秒内采集该进程的 CPU/内存/IO/线程/FD 占用</td>
+    <td>4 个 CSV + 汇总报告</td>
+</tr>
+<tr>
+    <td><code>stability_monitor</code></td>
+    <td><span class="badge badge-app">应用级</span></td>
+    <td>给定 PID，24 小时持续采样，检测内存泄漏</td>
+    <td>8640 行时序 CSV</td>
+</tr>
+<tr>
+    <td><code>system_stress</code></td>
+    <td><span class="badge badge-sys">系统级</span></td>
+    <td>自建 CPU/内存/IO/网络负载，压测硬件平台</td>
+    <td>实时日志 + 温度 + dmesg</td>
+</tr>
+</table>
+
+<h2>🔍 能检测什么</h2>
+
+<div class="card">
+<table>
+<tr><th>检测项</th><th>说明</th><th>异常信号</th></tr>
+<tr><td><strong>CPU 占用</strong></td><td>进程实际消耗的单核 CPU 百分比（utime + stime 差值）</td><td>稳态值远超申请值</td></tr>
+<tr><td><strong>内存占用 (RSS)</strong></td><td>进程常驻物理内存，含堆、栈、共享库</td><td><span class="warn">持续增长 → 内存泄漏</span></td></tr>
+<tr><td><strong>线程数</strong></td><td>进程创建的线程总数</td><td><span class="warn">持续增长 → 线程泄漏</span></td></tr>
+<tr><td><strong>文件描述符 (FD)</strong></td><td>打开的文件/socket/管道数量</td><td><span class="warn">持续增长 → FD 泄漏</span></td></tr>
+<tr><td><strong>磁盘 IO</strong></td><td>累计读写字节数（需 root）</td><td>远超预期的读写量</td></tr>
+<tr><td><strong>子进程</strong></td><td>进程 fork 出的子进程数量</td><td>失控的 fork 风暴</td></tr>
+<tr><td><strong>系统稳定性</strong></td><td>全负载下 CPU 温度、有无 kernel panic / OOM Kill</td><td>死机、降频、OOM</td></tr>
+</table>
+</div>
+
+<h2>🚀 五分钟上手</h2>
+
+<div class="card">
+    <h3>Step 1：编译</h3>
+    <pre><code>cd src
+mkdir -p build
+gcc -std=c11 -O2 -D_GNU_SOURCE app_profile/main.c      -o build/app_profile      -lpthread
+gcc -std=c11 -O2 -D_GNU_SOURCE stability_monitor/main.c -o build/stability_monitor -lpthread
+gcc -std=c11 -O2 -D_GNU_SOURCE system_stress/main.c     -o build/system_stress     -lpthread -lm</code></pre>
+</div>
+
+<div class="card">
+    <h3>Step 2：启动你的应用</h3>
+    <pre><code># 以 CloudGW 为例
+/opt/tbox/bin/CloudGW &
+APP_PID=$!</code></pre>
+</div>
+
+<div class="card">
+    <h3>Step 3：采集资源画像（10 秒）</h3>
+    <pre><code>./build/app_profile $APP_PID 10 /tmp/cloudgw_test</code></pre>
+    <p>输出示例：</p>
+    <pre><code>── CPU ────────────  平均: 5.2%  峰值: 8.0%
+── 内存 ────────────  RSS: 15872 KB (15.5 MB)
+── 线程 & FD ──────  线程: 6  FD: 12</code></pre>
+</div>
+
+<div class="card">
+    <h3>Step 4：判断结果</h3>
+    <table>
+    <tr><th>实测 vs 申请</th><th>判定</th></tr>
+    <tr><td>实测 ≤ 申请值</td><td><span class="check">✅ 通过</span></td></tr>
+    <tr><td>实测 > 申请值 但 &lt; 告警线</td><td><span class="warn">⚡ 需优化或降配</span></td></tr>
+    <tr><td>实测 ≥ 禁止线</td><td>❌ 拒绝</td></tr>
+    </table>
+</div>
+
+<h2>📊 输出文件说明</h2>
+
+<table>
+<tr><th>文件</th><th>内容</th><th>用途</th></tr>
+<tr><td><code>report.txt</code></td><td>汇总报告（CPU 均值+峰值, RSS, 线程, FD）</td><td>一眼看结论</td></tr>
+<tr><td><code>cpu.csv</code></td><td>每秒 CPU 占用率时序</td><td>导入 Excel 画趋势图</td></tr>
+<tr><td><code>mem.csv</code></td><td>RSS 内存采样</td><td>检测内存增长趋势</td></tr>
+<tr><td><code>threads_fd.csv</code></td><td>线程数 + FD 数采样</td><td>检测线程/FD 泄漏</td></tr>
+<tr><td><code>io.csv</code></td><td>磁盘读写量采样</td><td>IO 负载评估</td></tr>
+</table>
+
+<h2>💡 典型用法</h2>
+
+<div class="card">
+    <h3>场景 A：新应用接入评估</h3>
+    <div class="step"><span class="step-num">1</span><code>./build/app_profile $(pidof new_app) 30</code> — 采集 30 秒</div>
+    <div class="step"><span class="step-num">2</span>对比 <code>resource_plan.md</code> 申请值</div>
+    <div class="step"><span class="step-num">3</span>实测 ≤ 申请 → <span class="check">✅ 接入</span></div>
+</div>
+
+<div class="card">
+    <h3>场景 B：发版前 24h 泄漏检测</h3>
+    <div class="step"><span class="step-num">1</span><code>./build/stability_monitor $(pidof target_app)</code> — 启动 24h 监控</div>
+    <div class="step"><span class="step-num">2</span>24h 后用 Excel 打开 CSV</div>
+    <div class="step"><span class="step-num">3</span>RSS 列折线图斜率 ≈ 0 → <span class="check">✅ 无泄漏</span></div>
+</div>
+
+<div class="card">
+    <h3>场景 C：系统平台极限验证</h3>
+    <div class="step"><span class="step-num">1</span><code>sudo ./build/system_stress 600</code> — 10 分钟全负载</div>
+    <div class="step"><span class="step-num">2</span>观察 CPU 温度、dmesg 输出</div>
+    <div class="step"><span class="step-num">3</span>无降频、无 OOM、无 panic → <span class="check">✅ 通过</span></div>
+</div>
+
+<h2>🛠 部署到 TBox</h2>
+
+<pre><code># ARM 交叉编译
+cd src && mkdir build_arm && cd build_arm
+cmake .. -DCMAKE_TOOLCHAIN_FILE=../toolchain.cmake
+make
+
+# 部署
+scp app_profile stability_monitor system_stress root@tbox:/opt/tbox/test/
+ssh root@tbox "chmod +x /opt/tbox/test/*"</code></pre>
+
+<h2>📦 交付清单</h2>
+
+<table>
+<tr><th>路径</th><th>内容</th></tr>
+<tr><td><code>src/app_profile/main.c</code></td><td>C 版应用画像采集 (370 行)</td></tr>
+<tr><td><code>src/stability_monitor/main.c</code></td><td>C 版 24h 稳定性监控 (120 行)</td></tr>
+<tr><td><code>src/system_stress/main.c</code></td><td>C 版系统压力负载生成器 (170 行)</td></tr>
+<tr><td><code>src/CMakeLists.txt</code></td><td>CMake 构建（原生 + ARM 交叉编译）</td></tr>
+<tr><td><code>src/toolchain.cmake</code></td><td>ARM Cortex-A53 交叉编译链</td></tr>
+<tr><td><code>dummy_app/</code></td><td>模拟测试应用（Shell 版 + C 版）</td></tr>
+<tr><td><code>resource_test.html</code></td><td>完整测试方法文档 (15 章)</td></tr>
+<tr><td><code>README.md</code></td><td>工具包使用手册</td></tr>
+</table>
+
+<div class="footer">
+<p>TBox Platform — Resource Testing Toolkit v1.0</p>
+<p>工具源码：<code>src/</code> &nbsp;|&nbsp; 文档：<code>resource_test.html</code> &nbsp;|&nbsp; 手册：<code>README.md</code></p>
+</div>
+
+</body>
+</html>

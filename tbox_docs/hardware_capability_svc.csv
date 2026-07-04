@@ -1,0 +1,23 @@
+﻿模块,硬件接口/器件,内核层 (Kernel),用户空间能力 (Userspace SVC),依赖链,能力ID
+CPU,SoC (Arm Cortex-A 系列),"smp, cpufreq, cpuset, irqchip, clk",多核调度 / 频率缩放 / 中断绑定 / 核心隔离,无（基础平台）,cpu
+DDR,LPDDR4 / LPDDR4x,"CMA, memblock, ion, dmabuf",内存分配策略 / CMA 预留 / 大页 / 内存压力通知,CPU→DDR 总线,memory.ddr
+NAND,并行 NAND Flash,"MTD, UBI, ubifs",OTA 备份分区 / 日志存储 / 冗余引导,CPU→NAND Controller,storage.nand
+eMMC,eMMC 5.1,"MMC block 层, ext4, squashfs",系统分区 / 应用存储 / 配置持久化,CPU→eMMC Controller,storage.emmc
+SPI NOR,SPI NOR Flash (QSPI),MTD (SPI NOR),Bootloader / 环境变量存储,CPU→SPI Controller,storage.spinor
+MCU,车规 MCU (NXP S32K / Infineon),— (RTOS/Baremetal),CANFD 数据转发 / 实时 IO / 看门狗 / 电源状态上报,SoC SPI↔MCU,mcu.bridge
+CANFD,MCU 内部 CAN FD Controller + CAN PHY,MCU固件转发→SoC SPI→spidev→SPI-CAN GW→虚拟SocketCAN,CAN 总线通信 / 诊断(ISO 14229) / UDS 固件刷写,SoC SPI→MCU SPI→MCU CAN Controller→CAN PHY→CAN Bus,can.bus
+RS485/422,UART + RS485 PHY (自动方向控制),"tty serial, RS485 flags (termios)",串口通信 / Modbus RTU / 调试控制台,CPU→UART→RS485 PHY,serial.rs485
+SPI,SoC SPI Controller (QSPI/SPI) + MCU SPI,"spidev, MTD (SPI NOR)",MCU↔SoC 核间通信 / CANFD 报文转发 / Flash 读写,CPU→SPI Controller↔MCU SPI,serial.spi
+Ethernet,RGMII / RMII MAC + PHY,"net 子系统, PHY 驱动, ptp",TCP/IP 协议栈 / VLAN / PTP (gPTP) 硬件时间戳,CPU→MAC→PHY→Ethernet Switch,net.eth
+Ethernet Switch,板载 Switch 芯片 (KSZ9896 / DP83869),"DSA 驱动框架, bridge, iptables",端口转发 / VLAN 划分 / 流量整形 / 端口镜像,CPU→MAC→Switch PHY,net.switch
+USB,USB 2.0 / 3.0 Host + OTG,"usb core, gadget, hub 驱动",USB Host (4G/WiFi dongle) / Gadget (RNDIS/ACM),CPU→USB Controller→PHY,io.usb
+WiFi,SDIO / USB WiFi 模组,"cfg80211, mac80211 / nl80211",AP / STA 模式 / WPA2/WPA3 / 热点扫描,CPU→SDIO/USB→WiFi Chip,net.wifi
+4G/LTE,USB / PCIe 蜂窝模组,qmi_wwan / cdc_mbim / rndis,PPP / QMI / MBIM 拨号 / AT 指令 / 信号监测,CPU→USB/PCIe→Modem→SIM卡,net.cellular
+GPS/GNSS,UART / I2C GNSS 接收器,"tty serial, pps 子系统, gnss 框架",NMEA 0183 解析 / 定位数据上报 / PPS 脉冲输出,CPU→UART→GNSS→GPS天线,time.gps
+HSM,独立安全芯片 (SLM9670 / OPTIGA),"spi/i2c 加密驱动, pkcs11",密钥存储 / 签名验签 / TLS 握手加速 / 安全启动,CPU→SPI/I2C→HSM,security.hsm
+PMIC,PMIC (PF8100 / AXP),"regulator, power_supply, reboot",电压调节 / 低功耗模式 / RTC 唤醒 / 系统关机,PMIC→CPU 电源轨,power.pmic
+RTC,SoC 内部 RTC + 外部 RTC 芯片,"rtc 子系统, NTP",系统时间同步 / 硬件时钟 / 休眠保持 / 闹钟唤醒,RTC→后备电池→CPU,time.rtc
+PPS,GNSS PPS 引脚 + SoC GPIO,"pps-gpio 驱动, phc2sys",亚微秒级时间戳 / gPTP 时钟同步 / TSN 时间分发,GPS→PPS→SoC GPIO→TSN,time.pps
+GPIO,SoC GPIO Controller,gpio / gpiod (libgpiod),数字 IO / 中断输入 / 接触器控制 / 急停检测,SoC GPIO Pin,io.gpio
+ADC,SoC ADC Controller,IIO 子系统,模拟量采集 / 温度传感器 / 电压检测,SoC ADC Channel,io.adc
+PWM,SoC PWM Controller,pwm 子系统,背光控制 / 风机调速 / CP 信号生成,SoC PWM Channel,io.pwm

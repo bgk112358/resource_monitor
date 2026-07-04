@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(system_stress C)
+set(CMAKE_C_STANDARD 11)
+add_executable(system_stress main.c)
+target_compile_options(system_stress PRIVATE -Wall -Wextra -O2 -D_GNU_SOURCE)
+target_link_libraries(system_stress PRIVATE pthread m)
+install(TARGETS system_stress RUNTIME DESTINATION /opt/tbox/test)

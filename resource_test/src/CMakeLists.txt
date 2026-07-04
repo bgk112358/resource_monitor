@@ -1,0 +1,5 @@
+cmake_minimum_required(VERSION 3.10)
+project(TBox_ResourceTest C)
+add_subdirectory(app_profile)
+add_subdirectory(stability_monitor)
+add_subdirectory(system_stress)

@@ -1,0 +1,903 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>云端网关应用</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">CloudGW — 云端网关应用设计</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">CloudGW 是 TBox 与云端 MQTT Broker 通信的**单一网关进程**，运行于 SoC Linux 用户空间。<br>它是中间件服务 3.6 MQTTS Client 的具体实现，向下通过 HSM Server 完成 TLS 握手，<br>向上通过 **ZeroMQ** 与所有本地进程交换数据，MQTT 侧与 ZeroMQ 侧之间由**消息队列**桥接。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. 应用架构总览</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                         Cloud MQTT Broker
+                              │ MQTTS (TLS 1.2/1.3)
+                              │ Client Certificate via HSM
+                              ▼
+┌──────────────────────────────────────────────────────────────┐
+│                        CloudGW                                │
+│                                                               │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │  ① MQTT 引擎层 (MQTT Engine)                               │ │
+│  │  Paho MQTT C / mosquitto lib + OpenSSL engine → HSM Server│ │
+│  │  职责: Broker 连接、心跳、订阅、发布、重连                    │ │
+│  └──────────┬───────────────────────────────────────────────┘ │
+│             │  MQTT 消息 (Topic + Payload)                    │
+│             ▼                                                  │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │  ② Topic 路由层 (Topic Router + Codec)                     │ │
+│  │  职责: MQTT Topic ⇄ ZMQ Topic 映射 / 序列化 / 请求应答关联 │ │
+│  │  ┌──────────────────┐  ┌───────────────────────────────┐  │ │
+│  │  │ Pub/Sub 路由表    │  │ Req/Resp 关联表 (RPC-ID 映射) │  │ │
+│  │  └──────────────────┘  └───────────────────────────────┘  │ │
+│  └──────────┬───────────────────────────────────────────────┘ │
+│             │  路由后的内部消息                                  │
+│             ▼                                                  │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │  ③ 消息队列 (Message Queue Bridge)                         │ │
+│  │  职责: 解耦 MQTT 线程与 ZMQ 线程，异步传递                    │ │
+│  │  ┌────────────────────┐ ┌──────────────────────────────┐  │ │
+│  │  │  inbound queue     │ │  outbound queue               │  │ │
+│  │  │  (MQ→ZMQ 出队线程) │ │  (ZMQ→MQ 入队线程)            │  │ │
+│  │  └────────────────────┘ └──────────────────────────────┘  │ │
+│  └──────────┬───────────────────────────────────────────────┘ │
+│             │  队列消息 (内部格式)                               │
+│             ▼                                                  │
+│  ┌──────────────────────────────────────────────────────────┐ │
+│  │  ④ ZeroMQ 网关层 (ZMQ Gateway)                            │ │
+│  │  职责: 跨进程发布云消息 / 接收本地数据 / 处理 RPC           │ │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐ │ │
+│  │  │ PUB sock │ │ SUB sock │ │ REP sock │ │ REQ sock     │ │ │
+│  │  │ (发布云  │ │ (订阅本  │ │ (处理RPC │ │ (发起RPC请求 │ │ │
+│  │  │  端消息) │ │  地数据) │ │  请求)   │ │  到本地服务)  │ │ │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘ │ │
+│  └──────────────────────────────────────────────────────────┘ │
+└──────────────────────────┬───────────────────────────────────┘
+                           │ ZeroMQ (跨进程)
+                           │
+         ┌─────────────────┼──────────────────────┐
+         │                 │                       │
+         ▼                 ▼                       ▼
+   ┌────────────┐  ┌──────────────┐  ┌──────────────────────┐
+   │ UDS Server │  │ GPS Daemon   │  │ 其他本地进程          │
+   │ (诊断结果)  │  │ (位置上报)   │  │ (日志 / 状态 / OTA)   │
+   │ ZMQ PUB    │  │ ZMQ PUB     │  │ ZMQ PUB/REQ          │
+   └────────────┘  └──────────────┘  └──────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart TB
+    BROKER["Cloud MQTT Broker"]
+    BROKER --&gt;|"MQTTS (TLS 1.2/1.3)"| L1
+
+    subgraph CLOUDGW["CloudGW"]
+        subgraph L1["1 MQTT Engine"]
+            MQTT["Paho MQTT C&lt;br/&gt;+ OpenSSL engine"]
+            HSM["HSM Server&lt;br/&gt;Client Certificate"]
+        end
+        L1 --&gt; L2
+        subgraph L2["2 Topic Router"]
+            PUBRT["Pub/Sub 路由表"]
+            REQRT["Req/Resp 关联表"]
+        end
+        L2 --&gt; L3
+        subgraph L3["3 Message Queue"]
+            INQ["inbound queue&lt;br/&gt;MQ→ZMQ"]
+            OUTQ["outbound queue&lt;br/&gt;ZMQ→MQ"]
+        end
+        L3 --&gt; L4
+        subgraph L4["4 ZMQ Gateway"]
+            PUB["PUB sock&lt;br/&gt;发布云端消息"]
+            SUB["SUB sock&lt;br/&gt;订阅本地数据"]
+            REP["REP sock&lt;br/&gt;处理 RPC"]
+            REQ["REQ sock&lt;br/&gt;发起 RPC"]
+        end
+    end
+    L4 --&gt;|"ZMQ"| APPS["本地进程&lt;br/&gt;UDS / GPS / OTA / ..."]</pre>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. 四层架构详解</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.1 MQTT 引擎层（MQTT Engine）</h3>
+
+<p style="margin:4px 0">**硬件依赖链**：`net.cellular` / `net.eth` / `net.wifi` → `security.hsm`</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Comm Manager ──链路状态通知──→ CloudGW MQTT Engine
+                                    │
+                            ┌───────┴──────────┐
+                            │  MQTT Client       │
+                            │  (Paho MQTT C)     │
+                            │  ┌──────────────┐  │
+                            │  │ 连接管理       │  │
+                            │  │ Keep-Alive    │  │
+                            │  │ Last Will     │  │
+                            │  │ 自动重连       │  │
+                            │  └──────────────┘  │
+                            └───────┬──────────┘
+                                    │ OpenSSL engine
+                                    ▼
+                            ┌───────┴──────────┐
+                            │  TLS 1.2/1.3      │
+                            │  + HSM Client     │
+                            │  Cert (IPC)       │
+                            │  ←→ HSM Server    │
+                            └──────────────────┘</pre>
+
+<p style="margin:4px 0">- **MQTT 协议版本**：MQTT v3.1.1 / v5.0</p>
+<p style="margin:4px 0">- **客户端库**：Paho MQTT C (`libpaho-mqtt3as`) 或 mosquitto lib</p>
+<p style="margin:4px 0">- **TLS 接入方式**：</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">  // OpenSSL engine 接入 HSM Server 的 PKCS#11 接口
+  ENGINE_load_builtin_engines();
+  ENGINE *e = ENGINE_by_id("pkcs11");
+  ENGINE_ctrl_cmd_string(e, "MODULE_PATH", "/usr/lib/libpkcs11-hsm.so", 0);
+  SSL_CTX_set_client_cert_engine(ctx, e);</pre>
+<p style="margin:4px 0">- **Last Will**：`tbox/status` 主题发布 `offline` 遗嘱消息</p>
+<p style="margin:4px 0">- **心跳策略**：30s Keep-Alive，指数退避重连（1s → 5s → 30s → 60s cap）</p>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">关键配置</h4>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">配置项</th>
+<th style="padding:6px 10px">值</th>
+<th style="padding:6px 10px">来源</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">Broker URL</td>
+<td style="padding:6px 10px">`mqtts://{cloud-endpoint}:8883`</td>
+<td style="padding:6px 10px">配置文件 / OTA 下发</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Client ID</td>
+<td style="padding:6px 10px">`TBOX-{设备序列号}`</td>
+<td style="padding:6px 10px">设备证书 CN</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">TLS 版本</td>
+<td style="padding:6px 10px">TLS 1.2 / 1.3</td>
+<td style="padding:6px 10px">OpenSSL + HSM</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Client Certificate</td>
+<td style="padding:6px 10px">`pkcs11:token=HSM;object=dev-cert`</td>
+<td style="padding:6px 10px">HSM Key-0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">CA Certificate</td>
+<td style="padding:6px 10px">预置 / OTA 更新</td>
+<td style="padding:6px 10px">eMMC 证书分区</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Keep Alive</td>
+<td style="padding:6px 10px">30 秒</td>
+<td style="padding:6px 10px">固定</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Clean Session</td>
+<td style="padding:6px 10px">false (QoS 1/2 持久会话)</td>
+<td style="padding:6px 10px">配置</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">遗嘱 Topic</td>
+<td style="padding:6px 10px">`tbox/{device_id}/status`</td>
+<td style="padding:6px 10px">固定</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">遗嘱 Payload</td>
+<td style="padding:6px 10px">`offline`</td>
+<td style="padding:6px 10px">QoS 1, retain</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.2 Topic 路由层（Topic Router + Codec）</h3>
+
+<p style="margin:4px 0">**职责**：在 MQTT Topic 与 ZMQ 内部通道之间建立双向映射关系，并处理请求应答的关联。</p>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">2.2.1 Topic 映射表</h4>
+
+<p style="margin:4px 0">MQTT Topic 采用 `tbox/{device_id}/{direction}/{type}/{subtype}` 层级结构。</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">MQTT Topic</th>
+<th style="padding:6px 10px">方向</th>
+<th style="padding:6px 10px">ZMQ 通道</th>
+<th style="padding:6px 10px">消息模式</th>
+<th style="padding:6px 10px">Payload 格式</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/up/telemetry`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">`pub:telemetry`</td>
+<td style="padding:6px 10px">PUB</td>
+<td style="padding:6px 10px">CBOR (JSON)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/up/diag`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">`pub:diag`</td>
+<td style="padding:6px 10px">PUB</td>
+<td style="padding:6px 10px">CBOR</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/up/gps`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">`pub:gps`</td>
+<td style="padding:6px 10px">PUB</td>
+<td style="padding:6px 10px">CBOR</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/up/log`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">`pub:log`</td>
+<td style="padding:6px 10px">PUB</td>
+<td style="padding:6px 10px">CBOR</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/up/status`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">`pub:status`</td>
+<td style="padding:6px 10px">PUB</td>
+<td style="padding:6px 10px">CBOR</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/down/command`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">`sub:command`</td>
+<td style="padding:6px 10px">SUB</td>
+<td style="padding:6px 10px">CBOR (JSON)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/down/config`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">`sub:config`</td>
+<td style="padding:6px 10px">SUB</td>
+<td style="padding:6px 10px">CBOR (JSON)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/down/ota`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">`sub:ota`</td>
+<td style="padding:6px 10px">SUB</td>
+<td style="padding:6px 10px">CBOR</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/rpc/+/request`</td>
+<td style="padding:6px 10px">请求</td>
+<td style="padding:6px 10px">`rep:{method}`</td>
+<td style="padding:6px 10px">REQ/REP</td>
+<td style="padding:6px 10px">CBOR (RPC)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox/{id}/rpc/+/response`</td>
+<td style="padding:6px 10px">响应</td>
+<td style="padding:6px 10px">`rep:{method}`</td>
+<td style="padding:6px 10px">REQ/REP</td>
+<td style="padding:6px 10px">CBOR (RPC)</td>
+</tr>
+</table>
+
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">2.2.2 请求-应答模式（RPC via MQTT）</h4>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">本地进程                           CloudGW                         Cloud Broker
+   │                                │                                │
+   │  ZMQ REQ: get_dtc              │                                │
+   │ ──────────────────────────────→│                                │
+   │                                │  MQTT PUB: tbox/{id}/rpc/      │
+   │                                │  get_dtc/request               │
+   │                                │ ──────────────────────────────→│
+   │                                │                                │
+   │                                │  MQTT SUB: tbox/{id}/rpc/      │
+   │                                │  get_dtc/response              │
+   │                                │ ←──────────────────────────────│
+   │  ZMQ REP: {dtc_list}           │                                │
+   │ ←──────────────────────────────│                                │</pre>
+
+<p style="margin:4px 0">- **关联机制**：每个 RPC 请求携带 `correlationId`（UUID v4），放在 CBOR 头部</p>
+<p style="margin:4px 0">- **超时**：30 秒若无响应则返回超时错误</p>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.3 消息队列桥接（Message Queue Bridge）</h3>
+
+<p style="margin:4px 0">**职责**：在 MQTT 线程上下文与 ZMQ 线程上下文之间异步传递消息，避免锁竞争。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">MQTT Engine Thread                 Message Queue                  ZMQ Gateway Thread
+     │                                  │                              │
+     │ MQ消息入队                        │                              │
+     │ (MQ→ZMQ queue)                   │                              │
+     │ ────────────────────────────────→│                              │
+     │                                  │  出队 → 路由 → ZMQ PUB      │
+     │                                  │ ────────────────────────────→│
+     │                                  │                              │
+     │                                  │  ZMQ SUB → 入队             │
+     │                                  │ ←────────────────────────────│
+     │ ZMQ消息入队                      │                              │
+     │ (ZMQ→MQ queue)                   │                              │
+     │ ←────────────────────────────────│                              │
+     │                                  │                              │
+     │  出队 → Topic映射 → MQTT PUB    │                              │</pre>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">队列实现</h4>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">队列</th>
+<th style="padding:6px 10px">方向</th>
+<th style="padding:6px 10px">数据结构</th>
+<th style="padding:6px 10px">容量</th>
+<th style="padding:6px 10px">阻塞策略</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`mq_to_zmq`</td>
+<td style="padding:6px 10px">MQTT → ZMQ</td>
+<td style="padding:6px 10px">无锁 SPSC ring buffer</td>
+<td style="padding:6px 10px">4096 条</td>
+<td style="padding:6px 10px">满则丢弃最低优先级</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`zmq_to_mq`</td>
+<td style="padding:6px 10px">ZMQ → MQTT</td>
+<td style="padding:6px 10px">无锁 SPSC ring buffer</td>
+<td style="padding:6px 10px">4096 条</td>
+<td style="padding:6px 10px">满则阻塞 ZMQ 侧</td>
+</tr>
+</table>
+
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">消息内部格式</h4>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌─────────┬──────────┬──────────┬──────────┬─────────────┬──────────┐
+│ src     │ dst      │ qos      │ retain   │ topic_len   │ topic    │
+│ uint8   │ uint8    │ uint8    │ bool     │ uint16      │ bytes    │
+├─────────┼──────────┼──────────┼──────────┼─────────────┼──────────┤
+│ payload_len         │  payload              │ timestamp │ priority │
+│ uint32              │  bytes                │ uint64    │ uint8    │
+└─────────────────────┴──────────────────────┴───────────┴──────────┘</pre>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.4 ZeroMQ 网关层（ZMQ Gateway）</h3>
+
+<p style="margin:4px 0">**硬件依赖链**：`cpu`（进程间通信，无需额外硬件）</p>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">2.4.1 Socket 拓扑</h4>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌─────────────────────────────────────────────────────┐
+│                   CloudGW                             │
+│                                                       │
+│  ZMQ PUB (ipc:///tmp/tbox_cgw_pub.ipc)                │
+│    └── 发布云端下行消息（telemetry_rsp/command/...） │
+│                                                       │
+│  ZMQ SUB (ipc:///tmp/tbox_cgw_sub.ipc)                │
+│    ├── 订阅本地数据上报（telemetry/diag/gps/log）    │
+│    ├── filter: "telemetry" "diag" "gps" "log"        │
+│                                                       │
+│  ZMQ REP (ipc:///tmp/tbox_cgw_rep.ipc)                │
+│    └── 处理本地 RPC 请求（get_dtc/set_config/...）   │
+│                                                       │
+│  ZMQ REQ (ipc:///tmp/tbox_cgw_req.ipc)                │
+│    └── 向本地服务发起 RPC（HSM签名/存储查询/...）    │
+└─────────────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">- **传输方式**：`ipc:///tmp/tbox_cgw_*.ipc`（同机跨进程，Unix Domain Socket）</p>
+<p style="margin:4px 0">- **编码**：ZMQ 多帧消息（`[channel][payload]`）</p>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">2.4.2 ZMQ 消息协议</h4>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Frame 0: channel   (字符串, 如 "telemetry" "diag" "command")
+Frame 1: payload   (CBOR 二进制)
+Frame 2: timestamp (uint64, 可选)</pre>
+
+<h4 style="font-size:11pt;color:#333;margin:14px 0 6px">2.4.3 本地进程连接规范</h4>
+
+<p style="margin:4px 0">任何需要与 CloudGW 通信的本地进程，需按照以下模式连接：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">// 本地发布数据到云端（PUB → ZMQ SUB → CloudGW → MQTT PUB）
+void *pub = zmq_socket(ctx, ZMQ_PUB);
+zmq_connect(pub, "ipc:///tmp/tbox_cgw_sub.ipc");  // 连接到 CloudGW SUB
+zmq_send(pub, "telemetry", 9, ZMQ_SNDMORE);
+zmq_send(pub, cbor_data, cbor_len, 0);
+
+// 本地订阅云端消息（ZMQ SUB ← CloudGW PUB）
+void *sub = zmq_socket(ctx, ZMQ_SUB);
+zmq_connect(sub, "ipc:///tmp/tbox_cgw_pub.ipc");  // 连接到 CloudGW PUB
+zmq_setsockopt(sub, ZMQ_SUBSCRIBE, "command", 7);
+// 轮询接收...
+
+// 本地发起 RPC（ZMQ REQ → CloudGW REP）
+void *req = zmq_socket(ctx, ZMQ_REQ);
+zmq_connect(req, "ipc:///tmp/tbox_cgw_rep.ipc");  // 连接到 CloudGW REP
+zmq_send(req, "get_dtc", 7, ZMQ_SNDMORE);
+zmq_send(req, params, params_len, 0);
+zmq_recv(req, &amp;rsp, 0);</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. 核心数据流</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.1 数据上报流（Local → Cloud）</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">UDS Server                     CloudGW                            Cloud
+(ZMQ PUB)                      (ZMQ SUB → MQ → MQTT Engine)       (MQTT Broker)
+    │                             │                                  │
+    │ PUB "diag" {DTC结果}       │                                  │
+    │ ──────────────────────────→│                                  │
+    │                             │ 入队 zmq_to_mq queue             │
+    │                             │ 出队 → Topic路由                │
+    │                             │ 映射: diag → tbox/{id}/up/diag │
+    │                             │ MQTT PUB (QoS 1)                │
+    │                             │ ───────────────────────────────→│
+    │                             │                                  │</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.2 远程指令流（Cloud → Local）</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Cloud                            CloudGW                            UDS Server
+(MQTT Broker)                   (MQTT SUB → MQ → ZMQ PUB)           (ZMQ SUB)
+    │                             │                                  │
+    │ MQTT PUB: tbox/{id}/       │                                  │
+    │ down/command {remote_diag}  │                                  │
+    │ ──────────────────────────→│                                  │
+    │                             │ 入队 mq_to_zmq queue             │
+    │                             │ 出队 → Topic路由                │
+    │                             │ 映射: command → command         │
+    │                             │ ZMQ PUB "command"               │
+    │                             │ ───────────────────────────────→│
+    │                             │                                  │</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.3 RPC 请求流（Local → Cloud → Cloud → Local）</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Local Process                  CloudGW                            Cloud
+(ZMQ REQ)                      (ZMQ REP → MQ → MQTT Engine)       (MQTT Broker)
+    │                             │                                  │
+    │ REQ "get_dtc" {vin}        │                                  │
+    │ ──────────────────────────→│                                  │
+    │                             │ 分配 correlationId              │
+    │                             │ 入队 zmq_to_mq queue             │
+    │                             │ MQTT PUB tbox/{id}/rpc/         │
+    │                             │ get_dtc/request                 │
+    │                             │ ───────────────────────────────→│
+    │                             │                                  │
+    │                             │ MQTT SUB tbox/{id}/rpc/         │
+    │                             │ get_dtc/response                │
+    │                             │ ←───────────────────────────────│
+    │                             │ 匹配 correlationId              │
+    │                             │ 入队 mq_to_zmq queue             │
+    │ REP {dtc_list}              │                                  │
+    │ ←──────────────────────────│                                  │</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">4. CloudGW 状态机</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                    ┌───────────┐
+                    │  STOPPED  │
+                    └─────┬─────┘
+                          │ Daemon Monitor 启动
+                          ▼
+                    ┌───────────┐
+                    │  INIT     │ ← 初始化 ZMQ 套接字 + 消息队列
+                    └─────┬─────┘
+                          │ HSM Server 就绪 + Comm Manager 链路就绪
+                          ▼
+                    ┌───────────┐
+              ┌────→│  CONNECT  │ ← 发起 MQTTS 连接
+              │     └─────┬─────┘
+              │           │ MQTT Connack 收到
+              │           ▼
+              │     ┌───────────┐
+              │     │  ACTIVE   │ ← 收发数据
+              │     └─────┬─────┘
+              │           │
+              │      ┌────┴────┐
+              │      │         │
+              │   MQTT     Broker
+              │  断开      拒绝
+              │      │         │
+              │      ▼         ▼
+              │  ┌────────┐  ┌────────┐
+              │  │ RECON  │  │ FATAL  │
+              │  │ 重连中  │  │ 不可恢复│
+              │  └───┬────┘  └────────┘
+              │      │             │ Daemon Monitor 重启
+              └──────┘             │
+                                   ▼
+                             ┌───────────┐
+                             │  STOPPED  │
+                             └───────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">stateDiagram-v2
+    [*] --&gt; STOPPED
+    STOPPED --&gt; INIT: Daemon Monitor 启动
+    INIT --&gt; CONNECT: HSM + Comm Manager 就绪
+    CONNECT --&gt; ACTIVE: MQTT Connack 收到
+    CONNECT --&gt; CONNECT: 重试
+    ACTIVE --&gt; RECON: MQTT 断开
+    ACTIVE --&gt; FATAL: Broker 拒绝
+    RECON --&gt; CONNECT: 退避等待后重试
+    FATAL --&gt; STOPPED: Daemon Monitor 重启
+    STOPPED --&gt; [*]</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">5. 依赖关系</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">5.1 硬件依赖（引用 `hardware.md` 能力 ID）</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">依赖项</th>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">用途</th>
+<th style="padding:6px 10px">重要性</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">4G / Ethernet / WiFi</td>
+<td style="padding:6px 10px">`net.cellular`, `net.eth`, `net.wifi`</td>
+<td style="padding:6px 10px">MQTT Broker TCP 连接</td>
+<td style="padding:6px 10px">关键</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">HSM 芯片</td>
+<td style="padding:6px 10px">`security.hsm`</td>
+<td style="padding:6px 10px">TLS 客户端证书私钥签名</td>
+<td style="padding:6px 10px">关键</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">SPI (HSM 通道)</td>
+<td style="padding:6px 10px">`serial.spi`</td>
+<td style="padding:6px 10px">HSM Server ←→ HSM 芯片通信</td>
+<td style="padding:6px 10px">间接关键</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">CPU</td>
+<td style="padding:6px 10px">`cpu`</td>
+<td style="padding:6px 10px">进程运行 / ZMQ 消息处理</td>
+<td style="padding:6px 10px">基础</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">eMMC</td>
+<td style="padding:6px 10px">`storage.emmc`</td>
+<td style="padding:6px 10px">证书 / 配置持久化</td>
+<td style="padding:6px 10px">重要</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">5.2 中间件服务依赖（引用 `middleware.md` 服务）</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">依赖服务</th>
+<th style="padding:6px 10px">中间件章节</th>
+<th style="padding:6px 10px">交互方式</th>
+<th style="padding:6px 10px">用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">HSM Server</td>
+<td style="padding:6px 10px">3.5</td>
+<td style="padding:6px 10px">IPC (UNIX Domain Socket)</td>
+<td style="padding:6px 10px">TLS 签名 / 证书读取</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Comm Manager</td>
+<td style="padding:6px 10px">3.3</td>
+<td style="padding:6px 10px">IPC (链路状态通知)</td>
+<td style="padding:6px 10px">网络链路可用性监测</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Daemon Monitor</td>
+<td style="padding:6px 10px">3.1</td>
+<td style="padding:6px 10px">signal / IPC</td>
+<td style="padding:6px 10px">生命周期管理 / 崩溃重启</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">(本地进程) UDS Server</td>
+<td style="padding:6px 10px">3.4</td>
+<td style="padding:6px 10px">ZeroMQ PUB/REQ</td>
+<td style="padding:6px 10px">诊断数据上报 / RPC</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">(本地进程) GPS Daemon</td>
+<td style="padding:6px 10px">3.8 Time Sync</td>
+<td style="padding:6px 10px">ZeroMQ PUB</td>
+<td style="padding:6px 10px">GPS 位置上报</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">(本地进程) OTA Agent</td>
+<td style="padding:6px 10px">3.9</td>
+<td style="padding:6px 10px">ZeroMQ SUB/REP</td>
+<td style="padding:6px 10px">OTA 指令接收</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">5.3 依赖关系图</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────────┐
+│  hardware.md                  middleware.md                   │
+│  ┌──────────┐                 ┌──────────────────┐           │
+│  │ HSM Chip │──SPI/I2C──→    │ HSM Server (3.5) │──IPC──┐   │
+│  └──────────┘                 └──────────────────┘       │   │
+│                                                           │   │
+│  ┌──────────┐                 ┌──────────────────┐       │   │
+│  │ 4G/WiFi  │──USB/SDIO──→   │Comm Mgr (3.3)    │──IPC──┤   │
+│  │ /Ethernet│                 │(链路状态)        │       │   │
+│  └──────────┘                 └──────────────────┘       │   │
+│                                                           ├──→ CloudGW
+│  ┌──────────┐                 ┌──────────────────┐       │   │
+│  │ CPU+eMMC │──CPU BIST──→   │Daemon Monitor(3.1)│──sig─┤   │
+│  └──────────┘                 └──────────────────┘       │   │
+│                                                           │   │
+│  ┌──────────┐                 ┌──────────────────┐       │   │
+│  │ CAN Bus  │──MCU-SPI──→    │UDS Server (3.4)  │──ZMQ──┘   │
+│  └──────────┘                 └──────────────────┘           │
+└──────────────────────────────────────────────────────────────┘</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">6. Topic 定制规范</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">6.1 命名规则</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">tbox/{device_id}/{direction}/{type}[/{subtype}][/{rpc_method}]</pre>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">段</th>
+<th style="padding:6px 10px">说明</th>
+<th style="padding:6px 10px">示例</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`tbox`</td>
+<td style="padding:6px 10px">固定前缀</td>
+<td style="padding:6px 10px">`tbox`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`{device_id}`</td>
+<td style="padding:6px 10px">设备唯一标识</td>
+<td style="padding:6px 10px">`TBOX-AF123456`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`{direction}`</td>
+<td style="padding:6px 10px">`up` / `down` / `rpc`</td>
+<td style="padding:6px 10px">`up`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`{type}`</td>
+<td style="padding:6px 10px">消息分类</td>
+<td style="padding:6px 10px">`telemetry` `diag` `gps` `log` `status` `command` `config` `ota`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`{subtype}`</td>
+<td style="padding:6px 10px">子分类（可选）</td>
+<td style="padding:6px 10px">`periodic` `event`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`{rpc_method}`</td>
+<td style="padding:6px 10px">RPC 方法名（仅 rpc 方向）</td>
+<td style="padding:6px 10px">`get_dtc` `set_config` `remote_diag`</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">6.2 完整 Topic 清单</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">#</th>
+<th style="padding:6px 10px">Topic</th>
+<th style="padding:6px 10px">方向</th>
+<th style="padding:6px 10px">QoS</th>
+<th style="padding:6px 10px">Retain</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">`tbox/{id}/up/telemetry`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">周期性车辆状态数据</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">2</td>
+<td style="padding:6px 10px">`tbox/{id}/up/diag`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">诊断结果 / DTC</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">3</td>
+<td style="padding:6px 10px">`tbox/{id}/up/gps`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">GPS 位置 / 时间</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">4</td>
+<td style="padding:6px 10px">`tbox/{id}/up/log`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">0</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">日志批量上报</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">5</td>
+<td style="padding:6px 10px">`tbox/{id}/up/status`</td>
+<td style="padding:6px 10px">上报</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✓</td>
+<td style="padding:6px 10px">在线/离线/启动/休眠</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">6</td>
+<td style="padding:6px 10px">`tbox/{id}/down/command`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">远程指令</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">7</td>
+<td style="padding:6px 10px">`tbox/{id}/down/config`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✓</td>
+<td style="padding:6px 10px">远程配置更新</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">8</td>
+<td style="padding:6px 10px">`tbox/{id}/down/ota`</td>
+<td style="padding:6px 10px">下发</td>
+<td style="padding:6px 10px">2</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">OTA 升级通知</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">9</td>
+<td style="padding:6px 10px">`tbox/{id}/rpc/{method}/request`</td>
+<td style="padding:6px 10px">RPC 请求</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">远程过程调用请求</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">10</td>
+<td style="padding:6px 10px">`tbox/{id}/rpc/{method}/response`</td>
+<td style="padding:6px 10px">RPC 响应</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✗</td>
+<td style="padding:6px 10px">远程过程调用响应</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">11</td>
+<td style="padding:6px 10px">`tbox/{id}/will`</td>
+<td style="padding:6px 10px">遗嘱</td>
+<td style="padding:6px 10px">1</td>
+<td style="padding:6px 10px">✓</td>
+<td style="padding:6px 10px">Last Will（离线通知）</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">6.3 Payload 格式</h3>
+
+<p style="margin:4px 0">所有 Topic 的 Payload 统一使用 **CBOR** 编码（RFC 7049）。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">CBOR 根 Map:
+{
+  "v": 1,                // 版本
+  "ts": 1715702400.123,   // 时间戳 (unix seconds.micros)
+  "id": "msg-uuid",       // 消息唯一 ID
+  "data": { ... },        // 业务数据
+  "sig": "base64..."      // 可选, HSM 签名
+}</pre>
+
+<p style="margin:4px 0">对于 `rpc` 方向，额外字段：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">{
+  "v": 1,
+  "ts": 1715702400.123,
+  "id": "req-uuid",
+  "method": "get_dtc",
+  "correlationId": "req-uuid-123",
+  "params": { ... },    // request 侧
+  "result": { ... },    // response 侧
+  "error": null
+}</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">7. 进程生命周期</h2>
+
+<p style="margin:4px 0">由 Daemon Monitor（middleware.md 3.1）管理 CloudGW 进程：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">启动顺序：
+  1. HSM Server (3.5)       ← 必须先就绪
+  2. Comm Manager (3.3)     ← 网络链路
+  3. CloudGW                 ← 依赖上两者
+  4. UDS Server / OTA Agent ← 不直接依赖 CloudGW
+
+停止顺序（反向）：
+  1. CloudGW 发送 will + 断开 MQTTS
+  2. CloudGW 停止 ZMQ 套接字
+  3. 清理消息队列</pre>
+
+<p style="margin:4px 0">**健康检查**：</p>
+<p style="margin:4px 0">- Daemon Monitor 通过 ZMQ REQ 向 CloudGW 发送 `health` 请求</p>
+<p style="margin:4px 0">- CloudGW 在 1s 内返回 `{status: "ok", mqtt: "connected", uptime: 1234}`</p>
+<p style="margin:4px 0">- 连续 3 次超时 → Daemon Monitor SIGTERM → 重启</p>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">8. 配置存储</h2>
+
+<p style="margin:4px 0">CloudGW 配置持久化在 eMMC 分区：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">配置项</th>
+<th style="padding:6px 10px">路径</th>
+<th style="padding:6px 10px">格式</th>
+<th style="padding:6px 10px">更新方式</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">Broker 地址</td>
+<td style="padding:6px 10px">`/etc/tbox/cloudgw/broker.conf`</td>
+<td style="padding:6px 10px">TOML</td>
+<td style="padding:6px 10px">预置 / OTA 下发</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">设备证书引用</td>
+<td style="padding:6px 10px">`/etc/tbox/cloudgw/hsm_slots.conf`</td>
+<td style="padding:6px 10px">TOML</td>
+<td style="padding:6px 10px">预置</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Topic 映射表</td>
+<td style="padding:6px 10px">`/etc/tbox/cloudgw/topic_map.conf`</td>
+<td style="padding:6px 10px">TOML</td>
+<td style="padding:6px 10px">OTA 下发</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">ZMQ 端口</td>
+<td style="padding:6px 10px">`/etc/tbox/cloudgw/zmq.conf`</td>
+<td style="padding:6px 10px">TOML</td>
+<td style="padding:6px 10px">预置</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">9. 修订记录</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">版本</th>
+<th style="padding:6px 10px">日期</th>
+<th style="padding:6px 10px">修改内容</th>
+<th style="padding:6px 10px">修改人</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.1</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">初版 CloudGW 架构设计（MQTT Engine + Topic Router + Message Queue + ZMQ Gateway 四层）</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+</body></html>

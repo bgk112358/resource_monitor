@@ -1,0 +1,120 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN">
+
+<html lang="en">
+
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=UTF-8">
+  <title>LCOV - TBox Resource Test Coverage - app_profile/mem_sampler.c</title>
+  <link rel="stylesheet" type="text/css" href="../gcov.css">
+</head>
+
+<body>
+
+  <table width="100%" border=0 cellspacing=0 cellpadding=0>
+    <tr><td class="title">LCOV - code coverage report</td></tr>
+    <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+
+    <tr>
+      <td width="100%">
+        <table cellpadding=1 border=0 width="100%">
+          <tr>
+            <td width="10%" class="headerItem">Current view:</td>
+            <td width="35%" class="headerValue"><a href="../index.html">top level</a> - <a href="index.html">app_profile</a> - mem_sampler.c<span style="font-size: 80%;"> (source / <a href="mem_sampler.c.func-sort-c.html">functions</a>)</span></td>
+            <td width="5%"></td>
+            <td width="15%"></td>
+            <td width="10%" class="headerCovTableHead">Hit</td>
+            <td width="10%" class="headerCovTableHead">Total</td>
+            <td width="15%" class="headerCovTableHead">Coverage</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Test:</td>
+            <td class="headerValue">TBox Resource Test Coverage</td>
+            <td></td>
+            <td class="headerItem">Lines:</td>
+            <td class="headerCovTableEntry">22</td>
+            <td class="headerCovTableEntry">22</td>
+            <td class="headerCovTableEntryHi">100.0 %</td>
+          </tr>
+          <tr>
+            <td class="headerItem">Date:</td>
+            <td class="headerValue">2026-07-04 08:43:01</td>
+            <td></td>
+            <td class="headerItem">Functions:</td>
+            <td class="headerCovTableEntry">1</td>
+            <td class="headerCovTableEntry">1</td>
+            <td class="headerCovTableEntryHi">100.0 %</td>
+          </tr>
+          <tr><td><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+        </table>
+      </td>
+    </tr>
+
+    <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+  </table>
+
+  <table cellpadding=0 cellspacing=0 border=0>
+    <tr>
+      <td><br></td>
+    </tr>
+    <tr>
+      <td>
+<pre class="sourceHeading">          Line data    Source code</pre>
+<pre class="source">
+<a name="1"><span class="lineNum">       1 </span>            : /**</a>
+<a name="2"><span class="lineNum">       2 </span>            :  * mem_sampler.c — 内存 RSS 采样模块</a>
+<a name="3"><span class="lineNum">       3 </span>            :  *</a>
+<a name="4"><span class="lineNum">       4 </span>            :  * 读取 /proc/PID/status 的 VmRSS, 每 interval_sec 采样一次,</a>
+<a name="5"><span class="lineNum">       5 </span>            :  * 写入 CSV, 返回均值。</a>
+<a name="6"><span class="lineNum">       6 </span>            :  *</a>
+<a name="7"><span class="lineNum">       7 </span>            :  * 接口: mem_sampler_run(pid, count, interval, snap, csv)</a>
+<a name="8"><span class="lineNum">       8 </span>            :  */</a>
+<a name="9"><span class="lineNum">       9 </span>            : #include &quot;sampler.h&quot;</a>
+<a name="10"><span class="lineNum">      10 </span>            : </a>
+<a name="11"><span class="lineNum">      11 </span><span class="lineCov">          6 : int mem_sampler_run(pid_t pid, int count, int interval_sec,</span></a>
+<a name="12"><span class="lineNum">      12 </span>            :                      ResourceSnapshot *snap, FILE *csv) {</a>
+<a name="13"><span class="lineNum">      13 </span><span class="lineCov">          6 :     long sum = 0;</span></a>
+<a name="14"><span class="lineNum">      14 </span><span class="lineCov">          6 :     int samples = 0;</span></a>
+<a name="15"><span class="lineNum">      15 </span>            : </a>
+<a name="16"><span class="lineNum">      16 </span><span class="lineCov">         17 :     for (int i = 1; i &lt;= count &amp;&amp; g_running; i++) {</span></a>
+<a name="17"><span class="lineNum">      17 </span>            :         /* 读 /proc/PID/status */</a>
+<a name="18"><span class="lineNum">      18 </span>            :         char path[MAX_PATH], line[MAX_LINE];</a>
+<a name="19"><span class="lineNum">      19 </span><span class="lineCov">         12 :         snprintf(path, sizeof(path), &quot;/proc/%d/status&quot;, pid);</span></a>
+<a name="20"><span class="lineNum">      20 </span><span class="lineCov">         12 :         long rss = -1;</span></a>
+<a name="21"><span class="lineNum">      21 </span><span class="lineCov">         12 :         FILE *f = fopen(path, &quot;r&quot;);</span></a>
+<a name="22"><span class="lineNum">      22 </span><span class="lineCov">         12 :         if (f) {</span></a>
+<a name="23"><span class="lineNum">      23 </span><span class="lineCov">        253 :             while (fgets(line, sizeof(line), f)) {</span></a>
+<a name="24"><span class="lineNum">      24 </span><span class="lineCov">        253 :                 if (strncmp(line, &quot;VmRSS:&quot;, 6) == 0) {</span></a>
+<a name="25"><span class="lineNum">      25 </span><span class="lineCov">         11 :                     sscanf(line + 6, &quot;%ld&quot;, &amp;rss);</span></a>
+<a name="26"><span class="lineNum">      26 </span><span class="lineCov">         11 :                     break;</span></a>
+<a name="27"><span class="lineNum">      27 </span>            :                 }</a>
+<a name="28"><span class="lineNum">      28 </span>            :             }</a>
+<a name="29"><span class="lineNum">      29 </span><span class="lineCov">         11 :             fclose(f);</span></a>
+<a name="30"><span class="lineNum">      30 </span>            :         }</a>
+<a name="31"><span class="lineNum">      31 </span><span class="lineCov">         12 :         if (rss &lt; 0) rss = 0;</span></a>
+<a name="32"><span class="lineNum">      32 </span>            : </a>
+<a name="33"><span class="lineNum">      33 </span><span class="lineCov">         12 :         fprintf(csv, &quot;%d,%ld\n&quot;, i, rss);</span></a>
+<a name="34"><span class="lineNum">      34 </span><span class="lineCov">         12 :         sum += rss;</span></a>
+<a name="35"><span class="lineNum">      35 </span><span class="lineCov">         12 :         samples++;</span></a>
+<a name="36"><span class="lineNum">      36 </span>            : </a>
+<a name="37"><span class="lineNum">      37 </span><span class="lineCov">         12 :         sleep(interval_sec);</span></a>
+<a name="38"><span class="lineNum">      38 </span><span class="lineCov">         12 :         if (kill(pid, 0) != 0) break;</span></a>
+<a name="39"><span class="lineNum">      39 </span>            :     }</a>
+<a name="40"><span class="lineNum">      40 </span>            : </a>
+<a name="41"><span class="lineNum">      41 </span><span class="lineCov">          6 :     snap-&gt;rss_kb      = samples &gt; 0 ? sum / samples : 0;</span></a>
+<a name="42"><span class="lineNum">      42 </span><span class="lineCov">          6 :     snap-&gt;mem_samples = samples;</span></a>
+<a name="43"><span class="lineNum">      43 </span><span class="lineCov">          6 :     return samples &gt; 0 ? 0 : -1;</span></a>
+<a name="44"><span class="lineNum">      44 </span>            : }</a>
+</pre>
+      </td>
+    </tr>
+  </table>
+  <br>
+
+  <table width="100%" border=0 cellspacing=0 cellpadding=0>
+    <tr><td class="ruler"><img src="../glass.png" width=3 height=3 alt=""></td></tr>
+    <tr><td class="versionInfo">Generated by: <a href="http://ltp.sourceforge.net/coverage/lcov.php" target="_parent">LCOV version 1.14</a></td></tr>
+  </table>
+  <br>
+
+</body>
+</html>

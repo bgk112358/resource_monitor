@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TBox 应用资源测试方法</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{--bg:#0d1117;--sf:#161b22;--bd:#30363d;--tx:#c9d1d9;--mu:#8b949e;--ac:#58a6ff;--gr:#3fb950;--or:#d2991d;--rd:#f85149;--cb:#1c2128}
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--tx);line-height:1.7;max-width:960px;margin:0 auto;padding:40px 24px 80px}
+h1{font-size:1.8rem;color:#f0f6fc;border-bottom:2px solid var(--bd);padding-bottom:10px;margin:32px 0 16px}
+h2{font-size:1.35rem;color:var(--ac);margin:28px 0 10px;padding:6px 0;border-bottom:1px solid var(--bd)}
+h3{font-size:1.1rem;color:#e6edf3;margin:20px 0 6px}
+p{margin:6px 0 10px}
+table{border-collapse:collapse;width:100%;margin:12px 0 20px;font-size:.88rem}
+th,td{border:1px solid var(--bd);padding:7px 10px;text-align:left;vertical-align:top}
+th{background:var(--sf);color:#e6edf3;font-weight:600}
+tr:nth-child(even) td{background:#1a2026}
+code{font-family:"Cascadia Code","Fira Code",monospace;font-size:.84rem;background:var(--cb);padding:2px 6px;border-radius:3px;color:#d2a8ff}
+pre{background:var(--cb);border:1px solid var(--bd);border-radius:6px;padding:14px 18px;margin:10px 0 16px;overflow-x:auto;font-size:.82rem;line-height:1.5}
+pre code{background:none;padding:0;border-radius:0;color:var(--tx)}
+.green{color:var(--gr)} .orange{color:var(--or)} .red{color:var(--rd)}
+.badge{display:inline-block;padding:2px 8px;border-radius:3px;font-size:.75rem;font-weight:600}
+.badge-cpu{background:#1f6feb33;color:#58a6ff;border:1px solid #1f6feb66}
+.badge-mem{background:#3fb95033;color:#3fb950;border:1px solid #3fb95066}
+.badge-io{background:#d2991d33;color:#d2991d;border:1px solid #d2991d66}
+.badge-net{background:#f8514933;color:#f85149;border:1px solid #f8514966}
+.cover{text-align:center;padding:40px 0 20px;border-bottom:1px solid var(--bd);margin-bottom:30px}
+.cover h1{font-size:2rem;border:none;margin-bottom:8px}
+.cover p{color:var(--mu);font-size:.95rem}
+.meta{font-size:.82rem;color:var(--mu);margin:16px 0}
+.meta td{border:none;padding:3px 12px 3px 0;background:none}
+@media print{body{background:#fff;color:#000}pre,code{background:#f5f5f5;border-color:#ddd;color:#000}}
+</style>
+</head>
+<body>
+
+<div class="cover">
+<h1>TBox 应用资源测试方法</h1>
+<p>Unified Resource Testing Methodology — Embedded Linux (Dual-Core A53 @ 1.5GHz)</p>
+<table class="meta"><tr><td>平台</td><td>SoC: Dual-Core Cortex-A53 @ 1.5GHz, RAM: ~512MB, OS: Linux</td></tr>
+<tr><td>版本</td><td>v1.0</td></tr></table>
+</div>
+
+<h2>1. 测试总览</h2>
+
+<table>
+<tr><th>资源类别</th><th>测试工具</th><th>关键指标</th><th>通过标准</th></tr>
+<tr><td><span class="badge badge-cpu">CPU</span></td><td><code>stress-ng</code>, <code>htop</code>, <code>perf</code></td><td>单核/双核占用率, 上下文切换, 中断延迟</td><td>满载 < 85°C, 无软锁死</td></tr>
+<tr><td><span class="badge badge-mem">内存</span></td><td><code>stress-ng</code>, <code>smem</code>, <code>valgrind</code></td><td>RSS/PSS/USS, 内存泄漏, OOM 触发点</td><td>稳态无增长, 无 OOM Kill</td></tr>
+<tr><td><span class="badge badge-mem">存储</span></td><td><code>dd</code>, <code>fio</code>, <code>iostat</code></td><td>顺序/随机 IOPS, 吞吐量 (MB/s)</td><td>读写速度 ≥ 芯片规格 80%</td></tr>
+<tr><td><span class="badge badge-net">网络</span></td><td><code>iperf3</code>, <code>ping</code>, <code>curl</code></td><td>带宽, 延迟, 丢包率, 重连时间</td><td>丢包率 < 0.1%, 重连 < 5s</td></tr>
+<tr><td><span class="badge badge-io">CANFD</span></td><td><code>candump</code>, <code>cansend</code>, <code>canfdtest</code></td><td>收发帧数, 总线负载率, 错误帧数</td><td>1Mbps 满载 0 丢帧</td></tr>
+<tr><td><span class="badge badge-io">SPI</span></td><td><code>spidev_test</code>, 自定义 DMA 测试</td><td>时钟频率, 吞吐量, CRC 错误率</td><td>10MHz 稳定, CRC 错误 = 0</td></tr>
+<tr><td><span class="badge badge-io">RS485</span></td><td><code>modbus-cli</code>, 自定义回环测试</td><td>波特率, 误码率, 方向切换时间</td><td>115200bps 无误码</td></tr>
+<tr><td><span class="badge badge-io">GPIO/ADC/PWM</span></td><td><code>libgpiod</code>, <code>iio</code> 工具</td><td>中断响应时间, 采样精度, 占空比精度</td><td>中断延迟 < 100μs</td></tr>
+<tr><td><span class="badge badge-io">GPS/PPS</span></td><td><code>gpsd</code>, <code>ppstest</code>, <code>ntpq</code></td><td>定位精度, PPS 抖动, 授时偏差</td><td>PPS jitter < 1μs</td></tr>
+<tr><td><span class="badge badge-io">HSM</span></td><td><code>pkcs11-tool</code>, <code>openssl speed</code></td><td>签名速率 (次/s), 加解密吞吐</td><td>ECDSA sign ≥ 50 次/s</td></tr>
+</table>
+
+<h2>2. CPU 测试</h2>
+
+<h3>2.1 单核满载测试</h3>
+<pre><code># 绑定到 CPU0，持续 60 秒
+taskset -c 0 stress-ng --cpu 1 --timeout 60s --metrics-brief
+
+# 同时监控温度和频率
+watch -n 1 'cat /sys/class/thermal/thermal_zone0/temp; cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_cur_freq'</code></pre>
+
+<h3>2.2 双核满载测试</h3>
+<pre><code># 双核 100% 占用
+stress-ng --cpu 2 --timeout 120s --metrics-brief
+
+# 实时监控 (另一终端)
+htop -d 10</code></pre>
+
+<p><strong>通过标准</strong>：双核满载 120s 内温度 ≤ 85°C，无降频，无 kernel panic。</p>
+
+<h3>2.3 上下文切换压力</h3>
+<pre><code># 大量线程上下文切换
+stress-ng --cpu 2 --ctx 4 --timeout 60s --metrics-brief
+
+# 查看切换率
+perf stat -e context-switches stress-ng --cpu 2 --timeout 30s</code></pre>
+
+<p><strong>通过标准</strong>：上下文切换率稳定，无 scheduler 告警。</p>
+
+<h3>2.4 CPU 占用率精确测量（单应用）</h3>
+<pre><code># 启动被测应用
+./your_app &
+PID=$!
+
+# 采样 30 秒，每 1 秒一次
+for i in $(seq 1 30); do
+    ps -p $PID -o %cpu --no-headers >> cpu_sample.log
+    sleep 1
+done
+
+# 计算平均 CPU 占用
+awk '{sum+=$1} END {print "AVG CPU%:", sum/NR}' cpu_sample.log</code></pre>
+
+<h2>3. 内存测试</h2>
+
+<h3>3.1 常驻内存测量 (RSS/PSS/USS)</h3>
+<pre><code># PSS = 按共享库比例分摊后的真实内存占用 (最准确)
+smem -P your_app -c "pid name pss rss uss"
+
+# 持续监控
+while true; do
+    smem -P your_app -c "pid pss" --no-headers >> mem_pss.log
+    sleep 2
+done</code></pre>
+
+<h3>3.2 内存泄漏检测</h3>
+<pre><code># Valgrind 检测 (仅开发环境，性能下降 10-20x)
+valgrind --leak-check=full --log-file=vg.log ./your_app
+
+# 生产环境：长时间运行监控
+# 运行 24 小时，每 10 分钟采样一次内存
+for i in $(seq 1 144); do
+    smem -P your_app -c "pid pss" --no-headers >> leak_24h.log
+    sleep 600
+done
+# 用 Excel 画 PSS 趋势线，斜率 ≈ 0 则无泄漏</code></pre>
+
+<h3>3.3 OOM 阈值测试</h3>
+<pre><code># 逐步增加内存压力，观察 OOM Killer 触发点
+stress-ng --vm 1 --vm-bytes 250M --timeout 30s  # 250MB
+stress-ng --vm 1 --vm-bytes 280M --timeout 30s  # 280MB
+stress-ng --vm 1 --vm-bytes 300M --timeout 30s  # 300MB (预期触发 OOM)
+
+# 查看 OOM 日志
+dmesg | grep -i "oom\|killed"</code></pre>
+
+<h2>4. 存储测试</h2>
+
+<h3>4.1 eMMC 读写性能</h3>
+<pre><code># 顺序写
+dd if=/dev/zero of=/tmp/test.bin bs=1M count=100 oflag=direct 2>&1 | tail -1
+# 顺序读
+dd if=/tmp/test.bin of=/dev/null bs=1M count=100 iflag=direct 2>&1 | tail -1
+
+# fio 综合测试
+fio --name=emmc_test --filename=/tmp/fio.dat --size=200M \
+    --rw=randrw --bs=4k --direct=1 --numjobs=1 --runtime=30 \
+    --ioengine=libaio --group_reporting</code></pre>
+
+<h3>4.2 NAND Flash 测试</h3>
+<pre><code># 查看 MTD 分区
+cat /proc/mtd
+
+# UBI 卷读写速度
+dd if=/dev/zero of=/mnt/nand/test.bin bs=64k count=100 2>&1 | tail -1
+dd if=/mnt/nand/test.bin of=/dev/null bs=64k count=100 2>&1 | tail -1</code></pre>
+
+<h2>5. 网络测试</h2>
+
+<h3>5.1 以太网带宽</h3>
+<pre><code># 服务端 (PC)
+iperf3 -s
+
+# 客户端 (TBox)
+iperf3 -c 192.168.1.100 -t 30 -i 1     # TCP 上行
+iperf3 -c 192.168.1.100 -t 30 -i 1 -R  # TCP 下行
+iperf3 -c 192.168.1.100 -t 30 -u -b 100M  # UDP 测试</code></pre>
+
+<h3>5.2 4G 网络质量</h3>
+<pre><code># 信号质量
+qmicli -d /dev/cdc-wdm0 --nas-get-signal-strength
+
+# 延迟和丢包
+ping -c 100 -i 0.2 8.8.8.8 | tail -3
+
+# 带宽 (需云端 iperf3 服务端)
+iperf3 -c cloud-server.example.com -t 15 -i 1</code></pre>
+
+<h3>5.3 网络重连测试</h3>
+<pre><code># 模拟断网 → 重连
+ifconfig wwan0 down; sleep 30; ifconfig wwan0 up
+# 记录从 down 到 ping 通的时间
+timeout 60 sh -c 'while ! ping -c1 -W1 8.8.8.8 >/dev/null 2>&1; do sleep 1; done'</code></pre>
+
+<h2>6. CANFD 总线测试</h2>
+
+<h3>6.1 收发功能验证</h3>
+<pre><code># 设置 CANFD 接口 (2Mbps 数据段)
+ip link set can0 type can bitrate 500000 dbitrate 2000000 fd on
+ip link set can0 up
+
+# 发送 CANFD 帧 (64字节数据)
+cansend can0 123##1122334455667788AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00
+
+# 接收监控
+candump can0 -x</code></pre>
+
+<h3>6.2 高负载压力测试</h3>
+<pre><code># cangen 生成随机 CANFD 帧 (满载)
+cangen can0 -g 0 -I 123 -L 64 -f
+
+# 同时监控错误
+ip -details -statistics link show can0 | grep -E "errors|dropped"</code></pre>
+
+<p><strong>通过标准</strong>：1Mbps 仲裁段 / 2Mbps 数据段满载运行 60s，<code>rx_dropped = 0</code>，<code>errors = 0</code>。</p>
+
+<h2>7. SPI 通信测试</h2>
+
+<pre><code># 标准 spidev 测试 (发 32 字节 → 收 32 字节)
+spidev_test -D /dev/spidev0.0 -s 10000000 -b 8 -v
+
+# 自定义 DMA 回环测试
+./spi_dma_loopback -d /dev/spidev0.0 -s 10000000 -l 4096 -c 1000
+# 参数: 10MHz, 4KB 块, 1000 次 → 4MB 总传输量, 统计 CRC 错误</code></pre>
+
+<p><strong>通过标准</strong>：10MHz 时钟，1000 次 4KB 传输，CRC 错误 = 0。</p>
+
+<h2>8. RS485 通信测试</h2>
+
+<pre><code># 设置 RS485 模式
+echo 1 > /sys/class/tty/ttyRS0/rs485
+
+# 回环测试 (短接 A-B 线)
+cat /dev/ttyRS0 > recv.log &  # 后台接收
+echo "TEST_PATTERN_0123456789ABCDEF" > /dev/ttyRS0
+sleep 1; kill %1
+grep "TEST_PATTERN" recv.log && echo "✅ RS485 OK" || echo "❌ RS485 FAIL"
+
+# Modbus 通信验证
+modbus-rtu-test -d /dev/ttyRS0 -b 115200 -a 1 -r 0x0000 -c 10</code></pre>
+
+<h2>9. GPIO / ADC / PWM 测试</h2>
+
+<h3>9.1 GPIO 中断响应</h3>
+<pre><code># 监听 GPIO 中断
+gpiomon -n 1 -r gpiochip0 17   # GPIO17 上升沿, 单次触发
+
+# 用示波器量: 物理信号跳变 → gpiomon 打印时间差</code></pre>
+
+<h3>9.2 ADC 采样</h3>
+<pre><code># 读取 ADC 通道
+cat /sys/bus/iio/devices/iio:device0/in_voltage0_raw
+# 换算: 实际电压 = raw * Vref / 4096 (12-bit ADC)
+
+# 采样 100 次统计精度
+for i in $(seq 1 100); do cat /sys/bus/iio/devices/iio:device0/in_voltage0_raw >> adc.log; sleep 0.01; done
+# 计算标准差
+awk '{sum+=$1; sumsq+=$1*$1} END {printf "AVG=%.1f STD=%.2f\n", sum/NR, sqrt(sumsq/NR - (sum/NR)^2)}' adc.log</code></pre>
+
+<h3>9.3 PWM 输出</h3>
+<pre><code># 设置 PWM 占空比
+echo 0 > /sys/class/pwm/pwmchip0/export
+echo 20000 > /sys/class/pwm/pwmchip0/pwm0/period     # 20kHz
+echo 10000 > /sys/class/pwm/pwmchip0/pwm0/duty_cycle  # 50%
+echo 1 > /sys/class/pwm/pwmchip0/pwm0/enable
+
+# 用示波器验证实际占空比和频率</code></pre>
+
+<h2>10. GPS / PPS 时间同步测试</h2>
+
+<pre><code># GPS 定位状态
+gpspipe -w -n 20 | grep -E "TPV|mode"
+
+# PPS 脉冲精度
+ppstest /dev/pps0
+# 预期: offset < 1000ns, jitter < 1000ns
+
+# NTP 同步偏差
+ntpq -c rv | grep -E "offset|jitter"
+# 预期: offset < 10ms, jitter < 1ms
+
+# 长时间 PPS 稳定性 (1小时)
+timeout 3600 ppstest /dev/pps0 | awk '{print $3}' > pps_jitter_1h.log</code></pre>
+
+<p><strong>通过标准</strong>：PPS offset < 1μs，NTP offset < 10ms，GPS 定位 3D fix 时间 < 60s（冷启动）。</p>
+
+<h2>11. HSM 安全芯片测试</h2>
+
+<pre><code># PKCS#11 密钥列表
+pkcs11-tool --module /usr/lib/libpkcs11.so -L
+
+# ECDSA 签名性能 (Key-0)
+pkcs11-tool --module /usr/lib/libpkcs11.so -s -l -d 0 --id 0 \
+    -i /tmp/hash.bin -o /tmp/sig.bin
+# 循环 100 次计时
+time for i in $(seq 1 100); do
+    pkcs11-tool --module /usr/lib/libpkcs11.so -s -l --id 0 \
+        -i /tmp/hash.bin -o /tmp/sig.bin 2>/dev/null
+done</code></pre>
+<pre><code># OpenSSL 引擎验证 (TLS 握手测试)
+openssl speed -engine pkcs11 -elapsed -evp ecdsa 2>&1 | grep -E "sign|verify"
+
+# 随机数生成质量
+pkcs11-tool --module /usr/lib/libpkcs11.so --generate-random 1024 \
+    | xxd | head</code></pre>
+
+<p><strong>通过标准</strong>：ECDSA secp256r1 sign ≥ 50 次/s，随机数熵值正常。</p>
+
+<h2>12. 应用程序资源占用测试 <span style="font-size:.7rem;font-weight:400;color:var(--or)">（每个应用通用）</span></h2>
+
+<p>以下方法适用于 TBox 平台上的<strong>任何应用程序</strong>。将被测应用的进程名替换 <code>YOUR_APP</code> 即可。</p>
+
+<h3>12.1 一键采集脚本</h3>
+<pre><code>#!/bin/sh
+# app_resource_profile.sh — 应用资源画像采集
+# 用法: ./app_resource_profile.sh YOUR_APP 30
+
+APP_NAME="${1:?Usage: $0 <process_name> <duration_seconds>}"
+DURATION="${2:-30}"
+OUTDIR="/tmp/resource_profile_${APP_NAME}_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$OUTDIR"
+
+PID=$(pidof "$APP_NAME" 2>/dev/null | awk '{print $1}')
+if [ -z "$PID" ]; then
+    echo "❌ 进程 '$APP_NAME' 未运行"
+    exit 1
+fi
+echo "📊 采集进程 $APP_NAME (PID=$PID) 的资源数据, 持续 ${DURATION}s..."
+
+# ▼ CPU 每秒采样
+echo "sec,cpu_percent" > "$OUTDIR/cpu.csv"
+for i in $(seq 1 $DURATION); do
+    cpu=$(ps -p $PID -o %cpu --no-headers 2>/dev/null | tr -d ' ')
+    echo "$i,${cpu:-0}" >> "$OUTDIR/cpu.csv"
+    sleep 1
+done
+
+# ▼ 内存 PSS (采样 5 次)
+echo "sample,pss_kb,rss_kb,uss_kb" > "$OUTDIR/mem.csv"
+for i in 1 2 3 4 5; do
+    smem -P "$APP_NAME" -c "pid pss rss uss" --no-headers 2>/dev/null | head -1 | \
+        awk -v i="$i" '{printf "%d,%s,%s,%s\n", i, $2, $3, $4}' >> "$OUTDIR/mem.csv"
+    sleep $((DURATION / 5))
+done
+
+# ▼ 线程数 + FD 数
+echo "sample,threads,fd_count" > "$OUTDIR/threads_fd.csv"
+for i in 1 2 3 4 5; do
+    t_cnt=$(ls /proc/$PID/task 2>/dev/null | wc -l)
+    fd_cnt=$(ls /proc/$PID/fd 2>/dev/null | wc -l)
+    echo "$i,${t_cnt},${fd_cnt}" >> "$OUTDIR/threads_fd.csv"
+    sleep $((DURATION / 5))
+done
+
+# ▼ IO 读写量 (需要 root 或 CAP_SYS_PTRACE)
+echo "sample,read_kb,write_kb" > "$OUTDIR/io.csv"
+for i in 1 2 3 4 5; do
+    if [ -r /proc/$PID/io ]; then
+        rchar=$(awk '/read_bytes/ {print $2}' /proc/$PID/io)
+        wchar=$(awk '/write_bytes/ {print $2}' /proc/$PID/io)
+        echo "$i,$((rchar/1024)),$((wchar/1024))" >> "$OUTDIR/io.csv"
+    fi
+    sleep $((DURATION / 5))
+done
+
+# ▼ 网络连接数
+ss -tnp 2>/dev/null | grep "pid=$PID" | wc -l > "$OUTDIR/net_connections.txt"
+
+# ▼ 汇总报告
+cat > "$OUTDIR/report.txt" << EOF
+========================================
+ 应用资源画像报告
+========================================
+进程名称:  $APP_NAME
+PID:       $PID
+采集时长:  ${DURATION}s
+采集时间:  $(date)
+
+CPU 平均占用:  $(awk -F',' 'NR>1 {sum+=$2;n++} END {printf "%.1f%%", sum/n}' "$OUTDIR/cpu.csv")
+CPU 峰值占用:  $(awk -F',' 'NR>1 {if($2>max) max=$2} END {printf "%.1f%%", max}' "$OUTDIR/cpu.csv")
+内存 PSS:      $(awk -F',' 'NR>1 {sum+=$2;n++} END {printf "%.0f KB (%.1f MB)", sum/n, sum/n/1024}' "$OUTDIR/mem.csv")
+内存 RSS:      $(awk -F',' 'NR>1 {sum+=$3;n++} END {printf "%.0f KB (%.1f MB)", sum/n, sum/n/1024}' "$OUTDIR/mem.csv")
+线程数:        $(awk -F',' 'NR>1 {sum+=$2;n++} END {printf "%.0f", sum/n}' "$OUTDIR/threads_fd.csv")
+FD 数:         $(awk -F',' 'NR>1 {sum+=$3;n++} END {printf "%.0f", sum/n}' "$OUTDIR/threads_fd.csv")
+网络连接数:    $(cat "$OUTDIR/net_connections.txt")
+
+详细数据:
+  CPU 采样:    $OUTDIR/cpu.csv
+  内存采样:    $OUTDIR/mem.csv
+  IO 采样:     $OUTDIR/io.csv
+  线程/FD:     $OUTDIR/threads_fd.csv
+========================================
+EOF
+
+cat "$OUTDIR/report.txt"
+echo ""
+echo "✅ 所有数据保存在: $OUTDIR/"</code></pre>
+
+<h3>12.2 手动单项测量</h3>
+
+<pre><code># ── CPU: 平均 + 峰值 ──
+PID=$(pidof YOUR_APP | awk '{print $1}')
+for i in $(seq 1 30); do
+    ps -p $PID -o %cpu --no-headers | tr -d ' '
+    sleep 1
+done | awk '{sum+=$1; n++; if($1>max) max=$1}
+            END {printf "CPU AVG=%.1f%%  PEAK=%.1f%%\n", sum/n, max}'
+
+# ── 内存: PSS (最准) / RSS / USS ──
+smem -P YOUR_APP -c "pid name pss rss uss"
+
+# ── 线程数 ──
+ls /proc/$PID/task | wc -l
+
+# ── 打开的文件描述符 ──
+ls /proc/$PID/fd | wc -l
+# 哪些文件被打开?
+ls -l /proc/$PID/fd | awk '{print $NF}' | sort | uniq -c | sort -rn
+
+# ── 磁盘 IO (累计) ──
+cat /proc/$PID/io
+# read_bytes:  累计读 (字节)
+# write_bytes: 累计写 (字节)
+# 隔 10 秒再读一次, 差值 / 10 = 平均 IO 吞吐 (B/s)
+
+# ── 网络流量 (累计) ──
+cat /proc/$PID/net/dev
+# 或使用 nethogs (实时)
+nethogs -d 2 $PID</code></pre>
+
+<h3>12.3 长时间稳定性测试（24 小时）</h3>
+<pre><code>#!/bin/sh
+# 24h 稳定性监控
+APP_NAME="$1"
+PID=$(pidof "$APP_NAME" | awk '{print $1}')
+LOG="/tmp/stability_${APP_NAME}.csv"
+echo "timestamp,cpu%,pss_kb,threads,fd" > "$LOG"
+
+for i in $(seq 1 8640); do   # 8640 × 10s = 24h
+    cpu=$(ps -p $PID -o %cpu --no-headers 2>/dev/null | tr -d ' ')
+    pss=$(smem -P "$APP_NAME" -c "pss" --no-headers 2>/dev/null | head -1 | tr -d ' ')
+    threads=$(ls /proc/$PID/task 2>/dev/null | wc -l)
+    fd=$(ls /proc/$PID/fd 2>/dev/null | wc -l)
+    echo "$(date +%H:%M:%S),${cpu:-0},${pss:-0},${threads:-0},${fd:-0}" >> "$LOG"
+    sleep 10
+done
+
+# 分析: 用 Excel 打开 LOG, 画 PSS 趋势线
+# 判断: 斜率 ≈ 0 → 无泄漏; 斜率 > 0 → 有泄漏, 斜率越大越严重</code></pre>
+
+<h3>12.4 多应用共存测试</h3>
+<pre><code># 启动基线所有应用, 再启动新应用, 测量系统资源增量
+# 1. 采集基线 (无被测应用)
+./app_resource_profile.sh system_baseline 30
+
+# 2. 启动新应用
+./your_new_app &
+sleep 5  # 等初始化完成
+
+# 3. 采集增量
+./app_resource_profile.sh your_new_app 30
+
+# 对比: report.txt 中的差值 = 新应用的真实资源开销</code></pre>
+
+<h3>12.5 应用资源申请对照表</h3>
+
+<table>
+<tr><th>测试项</th><th>命令/方法</th><th>实测值</th><th>申请值</th><th>偏差</th><th>☐</th></tr>
+<tr><td>CPU 平均占用</td><td>§12.1 脚本 CPU 行</td><td>___ %</td><td>___ %</td><td>___ %</td><td>☐</td></tr>
+<tr><td>CPU 峰值占用</td><td>§12.1 脚本 CPU 行</td><td>___ %</td><td>≤ ___ %</td><td>—</td><td>☐</td></tr>
+<tr><td>内存 PSS</td><td>smem 命令</td><td>___ MB</td><td>___ MB</td><td>___ MB</td><td>☐</td></tr>
+<tr><td>内存 RSS</td><td>smem 命令</td><td>___ MB</td><td>—</td><td>—</td><td>☐</td></tr>
+<tr><td>线程数</td><td>§12.2 命令</td><td>___</td><td>≤ ___</td><td>—</td><td>☐</td></tr>
+<tr><td>FD 数</td><td>§12.2 命令</td><td>___</td><td>≤ ___</td><td>—</td><td>☐</td></tr>
+<tr><td>磁盘读吞吐</td><td>/proc/PID/io (差值/10s)</td><td>___ KB/s</td><td>≤ ___ KB/s</td><td>—</td><td>☐</td></tr>
+<tr><td>磁盘写吞吐</td><td>/proc/PID/io (差值/10s)</td><td>___ KB/s</td><td>≤ ___ KB/s</td><td>—</td><td>☐</td></tr>
+<tr><td>网络连接数</td><td>ss -tnp</td><td>___</td><td>≤ ___</td><td>—</td><td>☐</td></tr>
+<tr><td>24h PSS 趋势</td><td>§12.3 脚本 → Excel</td><td>___ MB/h</td><td>≈ 0</td><td>—</td><td>☐</td></tr>
+<tr><td>多应用共存增量</td><td>§12.4 方法</td><td>CPU +___% / MEM +___MB</td><td>—</td><td>—</td><td>☐</td></tr>
+</table>
+
+<h2>14. 综合压力测试（全系统）</h2>
+
+<p>同时加载所有资源，模拟最坏场景：</p>
+
+<pre><code>#!/bin/sh
+# TBox 综合压力测试脚本 (运行 10 分钟)
+
+# 1. CPU: 双核 80% 占用
+stress-ng --cpu 2 --cpu-load 80 --timeout 600s &
+
+# 2. 内存: 分配 200MB
+stress-ng --vm 1 --vm-bytes 200M --timeout 600s &
+
+# 3. 存储: 持续随机读写
+fio --name=stress_emmc --filename=/tmp/stress.dat --size=50M \
+    --rw=randrw --bs=4k --direct=1 --numjobs=1 --runtime=600 \
+    --ioengine=libaio --group_reporting &
+
+# 4. CANFD: 满载发送
+cangen can0 -g 0 -L 64 -f &
+cangen can1 -g 0 -L 64 -f &
+
+# 5. 网络: iperf3 持续测试 (需服务端)
+iperf3 -c 192.168.1.100 -t 600 -i 10 &
+
+# 6. GPS: 持续读取
+while true; do gpspipe -w -n 1 >> /dev/null; sleep 0.1; done &
+
+# 7. 等待结束
+wait
+echo "=== 综合压力测试完成 ==="
+dmesg | tail -50 | grep -iE "error|fail|oom|panic"</code></pre>
+
+<p><strong>通过标准</strong>：10 分钟全负载运行，无 OOM Kill、无 kernel panic、无 CAN 丢帧、网络丢包 < 0.5%。</p>
+
+<h2>15. 系统平台测试报告模板</h2>
+
+<table>
+<tr><th>项目</th><th>测试方法</th><th>实测值</th><th>标准</th><th>结果</th></tr>
+<tr><td>CPU 双核满载温度</td><td>§2.2</td><td>___ °C</td><td>≤ 85°C</td><td>☐</td></tr>
+<tr><td>单应用 CPU 占用</td><td>§2.4</td><td>___ %</td><td>≤ 申请值</td><td>☐</td></tr>
+<tr><td>单应用内存 (PSS)</td><td>§3.1</td><td>___ MB</td><td>≤ 申请值</td><td>☐</td></tr>
+<tr><td>24h 内存泄漏</td><td>§3.2</td><td>___ MB/h</td><td>≈ 0</td><td>☐</td></tr>
+<tr><td>eMMC 顺序写</td><td>§4.1</td><td>___ MB/s</td><td>≥ 规格 80%</td><td>☐</td></tr>
+<tr><td>以太网带宽</td><td>§5.1</td><td>___ Mbps</td><td>≥ 90</td><td>☐</td></tr>
+<tr><td>4G 重连时间</td><td>§5.3</td><td>___ s</td><td>≤ 5s</td><td>☐</td></tr>
+<tr><td>CANFD 满载丢帧</td><td>§6.2</td><td>___ 帧</td><td>= 0</td><td>☐</td></tr>
+<tr><td>SPI 10MHz CRC 错误</td><td>§7</td><td>___ 次</td><td>= 0</td><td>☐</td></tr>
+<tr><td>RS485 115200 误码</td><td>§8</td><td>___ bit</td><td>= 0</td><td>☐</td></tr>
+<tr><td>GPIO 中断延迟</td><td>§9.1</td><td>___ μs</td><td>≤ 100μs</td><td>☐</td></tr>
+<tr><td>ADC 采样标准差</td><td>§9.2</td><td>___ LSB</td><td>≤ 2 LSB</td><td>☐</td></tr>
+<tr><td>PPS jitter</td><td>§10</td><td>___ ns</td><td>≤ 1μs</td><td>☐</td></tr>
+<tr><td>HSM ECDSA 签名</td><td>§11</td><td>___ 次/s</td><td>≥ 50 次/s</td><td>☐</td></tr>
+<tr><td>综合压力 10min</td><td>§12</td><td>—</td><td>无死机/无OOM</td><td>☐</td></tr>
+</table>
+
+<p style="text-align:center;color:var(--mu);margin-top:40px;font-size:.82rem">TBox 应用资源测试方法 v1.0 — 嵌入式 Linux · Dual-Core A53 @ 1.5GHz</p>
+</body>
+</html>

@@ -1,0 +1,243 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>TBox平台总纲</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">TBox 平台总纲</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">本文档是 TBox 系统架构的**唯一入口索引**，列出所有子系统的角色、文档引用和相互依赖关系。<br>新成员应从本文档开始，按硬件→中间件→应用层的顺序阅读各子系统文档。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. 文档地图</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">platform.md (本文档) — 平台总纲
+│
+├─ hardware.md      — 硬件能力框架 (SoC + MCU 双处理器)
+│
+├─ middleware.md    — 中间件服务架构 (IPC / 守护 / 通信 / 安全 / 时间)
+│
+├─ Slink.md         — 本地进程间通信 (ZMQ IPC 域划分)
+├─ CloudGW.md       — 云端网关 (MQTTS + ZMQ 桥接)
+│
+├─ UDS.md           — 统一诊断服务 (DoIP + UDS + CAN 路由)
+├─ OTA.md           — 远程升级框架 (下载→烧录→回滚)
+│
+├─ HTCU.md          — 充电桩站级主控 (功率分配 / 储能 / 安全)
+├─ TTCU.md          — 充电桩终端应用 (充放电 / 计量 / 计费)
+│
+├─ (Extendable)     — 后续可按需扩展新模块</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. 系统分层</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap"> ┌───────────────────────────────────────────────────────┐
+ │                  Application Layer                     │
+ │  ┌────────────┐  ┌──────────────┐  ┌──────────────┐   │
+ │  │ HTCU       │  │ TTCU         │  │ ...          │   │
+ │  │ (站级主控)  │  │ (桩级终端)   │  │              │   │
+ │  └─────┬──────┘  └──────┬───────┘  └──────────────┘   │
+ │        │                │                              │
+ ├────────┼────────────────┼──────────────────────────────┤
+ │  ┌─────┴──────────────┬─┴──────────────┐              │
+ │  │  CloudGW           │  UDS Server     │              │
+ │  │  (MQTTS Gateway)   │  (DoIP + UDS)   │              │
+ │  └────────┬───────────┴────────┬───────┘              │
+ │           │                    │                       │
+ │  ┌────────┴────────────────────┴─────────────────┐    │
+ │  │          Middleware Services Layer              │    │
+ │  │                                                │    │
+ │  │  ┌──────────┐ ┌──────────┐ ┌───────────────┐ │    │
+ │  │  │ SPI-CAN  │ │ Comm     │ │ HSM / Time    │ │    │
+ │  │  │ Gateway  │ │ Manager  │ │ Sync / Guard  │ │    │
+ │  │  └──────────┘ └──────────┘ └───────────────┘ │    │
+ │  │  ┌──────────┐ ┌──────────┐ ┌───────────────┐ │    │
+ │  │  │ Daemon   │ │ OTA      │ │ Log / ...     │ │    │
+ │  │  │ Monitor  │ │ Agent    │ │               │ │    │
+ │  │  └──────────┘ └──────────┘ └───────────────┘ │    │
+ │  └────────────────────────────────────────────────┘    │
+ ├────────────────────────────────────────────────────────┤
+ │                   IPC Layer (ZMQ)                      │
+ │  ┌─────────────────┐  ┌──────────────────────────────┐ │
+ │  │ CloudGW IPC 域   │  │ Slink IPC 域                 │ │
+ │  │ CLOUD_GW_*       │  │ /tmp/InterOTA2Main           │ │
+ │  └─────────────────┘  └──────────────────────────────┘ │
+ ├────────────────────────────────────────────────────────┤
+ │                 Linux Kernel / Drivers                  │
+ ├────────────────────────────────────────────────────────┤
+ │                  Hardware Platform                      │
+ │  SoC: SPI UART USB Ethernet SDIO GPIO PPS            │
+ │       └── SPI ──→ MCU ──→ CANFD / RS485 / GPIO / ADC │
+ └────────────────────────────────────────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart TB
+    subgraph APP["Application Layer"]
+        HTCU["HTCU&lt;br/&gt;站级主控"]
+        TTCU["TTCU&lt;br/&gt;桩级终端"]
+    end
+
+    subgraph GW["Gateway Layer"]
+        CloudGW["CloudGW&lt;br/&gt;MQTTS Gateway"]
+        UDS["UDS Server&lt;br/&gt;DoIP + UDS"]
+    end
+
+    subgraph MW["Middleware Services Layer"]
+        SPI["SPI-CAN&lt;br/&gt;Gateway"]
+        Comm["Comm&lt;br/&gt;Manager"]
+        HSM["HSM / Time&lt;br/&gt;Sync / Guard"]
+        Daemon["Daemon&lt;br/&gt;Monitor"]
+        OTA["OTA&lt;br/&gt;Agent"]
+        Log["Log Mgr"]
+    end
+
+    subgraph IPC["IPC Layer - ZMQ"]
+        CW["CloudGW IPC&lt;br/&gt;ipc:///tmp/tbox_cgw_*"]
+        SL["Slink IPC&lt;br/&gt;/tmp/InterOTA2Main"]
+    end
+
+    subgraph KERNEL["Linux Kernel / Drivers"]
+        SPIDRV["spidev | vcan | tty | net | crypto"]
+    end
+
+    subgraph HW["Hardware Platform"]
+        SoC["SoC: SPI UART USB ETH SDIO GPIO PPS"]
+        MCU["MCU: CANFD / RS485 / GPIO / ADC"]
+    end
+
+    APP --&gt; GW
+    GW --&gt; MW
+    MW --&gt; IPC
+    IPC --&gt; KERNEL
+    KERNEL --&gt; HW
+    SoC --&gt;|"SPI"| MCU</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. 模块职责一览</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">模块</th>
+<th style="padding:6px 10px">文档</th>
+<th style="padding:6px 10px">角色</th>
+<th style="padding:6px 10px">关键外部接口</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Hardware**</td>
+<td style="padding:6px 10px">`hardware.md`</td>
+<td style="padding:6px 10px">SoC+MCU 双处理器，硬件能力矩阵</td>
+<td style="padding:6px 10px">— (提供者)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Middleware**</td>
+<td style="padding:6px 10px">`middleware.md`</td>
+<td style="padding:6px 10px">服务编排 + IPC 总线</td>
+<td style="padding:6px 10px">启动 Daemon Monitor → 按序拉起所有服务</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Slink**</td>
+<td style="padding:6px 10px">`Slink.md`</td>
+<td style="padding:6px 10px">本地 ZMQ IPC 域管理</td>
+<td style="padding:6px 10px">`/tmp/Inter*` 命名通道</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**CloudGW**</td>
+<td style="padding:6px 10px">`CloudGW.md`</td>
+<td style="padding:6px 10px">MQTTS → ZMQ 桥接网关</td>
+<td style="padding:6px 10px">`ipc:///tmp/tbox_cgw_*.ipc` (4 socket)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**UDS**</td>
+<td style="padding:6px 10px">`UDS.md`</td>
+<td style="padding:6px 10px">DoIP 边缘节点 + UDS 协议栈</td>
+<td style="padding:6px 10px">Port 13400 (外接 VDS), vcan0 (内接 ECU)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**OTA**</td>
+<td style="padding:6px 10px">`OTA.md`</td>
+<td style="padding:6px 10px">远程升级全生命周期</td>
+<td style="padding:6px 10px">HTTPS 下载 → UDS CAN 烧录 → 回滚</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**HTCU**</td>
+<td style="padding:6px 10px">`HTCU.md`</td>
+<td style="padding:6px 10px">充电站级主控</td>
+<td style="padding:6px 10px">MQTTS(CloudGW), ETH(TTCU 群), CAN(储能 BMS)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**TTCU**</td>
+<td style="padding:6px 10px">`TTCU.md`</td>
+<td style="padding:6px 10px">充电桩终端</td>
+<td style="padding:6px 10px">ETH(HTCU), SocketCAN(BMS), RS485(电表)</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">4. 数据流总图</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Cloud Platform (MQTT Broker)
+        │ MQTTS (TLS 1.3, Client Cert via HSM)
+        ▼
+┌──────────────────────────────────────────────────────────────────┐
+│  CloudGW ──→ HTCU ──→ TTCU群 ──→ CAN(BMS) / RS485(电表)        │
+│    │                                    │           │             │
+│    │         ┌──────────────────────────┘           │             │
+│    ▼         ▼                                      ▼             │
+│  Slink IPC   UDS Server (DoIP Port 13400)       充电桩            │
+│  (状态帧)     │ (外接 VDS 诊断设备)                              │
+│               ▼                                                  │
+│         SPI-CAN Gateway ──→ MCU ──→ CAN Bus ──→ Target ECU       │
+│                                                                   │
+│  OTA Agent ──HTTPS──→ 下载加密包 ──→ UDS CAN 烧录 ──→ Target ECU │
+└──────────────────────────────────────────────────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart LR
+    Cloud["Cloud Platform&lt;br/&gt;MQTT Broker"]
+    Cloud --&gt;|"MQTTS (TLS 1.3)&lt;br/&gt;Client Cert via HSM"| CloudGW["CloudGW"]
+    CloudGW --&gt; HTCU["HTCU&lt;br/&gt;站级主控"]
+    HTCU --&gt; TTCU["TTCU 群&lt;br/&gt;桩级终端"]
+    TTCU --&gt;|"CAN"| BMS["CAN (BMS)"]
+    TTCU --&gt;|"RS485"| Meter["RS485 (电表)"]
+
+    CloudGW --&gt; Slink["Slink IPC&lt;br/&gt;状态帧"]
+    HTCU --&gt; UDS["UDS Server&lt;br/&gt;DoIP Port 13400"]
+    VDS["VDS 诊断设备"] --&gt;|"DoIP"| UDS
+    UDS --&gt; SPIGW["SPI-CAN Gateway"]
+    SPIGW --&gt; MCU["MCU"]
+    MCU --&gt;|"CAN Bus"| ECU["Target ECU"]
+
+    OTA["OTA Agent"] --&gt;|"HTTPS"| Download["下载加密包"]
+    Download --&gt; UDS2["UDS CAN 烧录"]
+    UDS2 --&gt;|"CAN"| ECU2["Target ECU"]</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">5. 修订记录</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">版本</th>
+<th style="padding:6px 10px">日期</th>
+<th style="padding:6px 10px">修改内容</th>
+<th style="padding:6px 10px">修改人</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.1</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">初版平台总纲</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+</body></html>

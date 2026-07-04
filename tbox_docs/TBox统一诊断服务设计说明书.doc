@@ -1,0 +1,910 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>统一诊断服务</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">UDS — 统一诊断服务应用设计</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">UDS 诊断服务应用运行于 TBox SoC Linux 用户空间，作为**车载 DoIP 边缘节点**，<br>对外连接 VDS（外接诊断设备），对内通过 CAN 总线访问目标 ECU，<br>提供故障码读取、参数标定、程序烧录等全功能 UDS 诊断服务。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. 系统角色定位</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                    ┌────────────────────────────────────────────┐
+                    │  VDS（外接诊断设备）                         │
+                    │  PC / 平板诊断工具                          │
+                    │  DoIP Client (ISO 13400)                   │
+                    └─────────────────┬──────────────────────────┘
+                                      │ Ethernet (DoIP)
+                                      │ TCP port 13400
+                                      ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                TBox — DoIP Edge Node (UDS Server)                │
+│                                                                   │
+│  角色：DoIP Gateway + UDS Router                                  │
+│  职责：VDS 接入鉴权 / DoIP↔CAN 协议转换 / 多 ECU 路由 /          │
+│         安全访问控制 / 程序烧录管理                                │
+│                                                                   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────────┐ │
+│  │ VDS 接入  │  │ UDS 核心  │  │ CAN 路由  │  │ 烧录管理          │ │
+│  │ DoIP     │  │ ISO 14229│  │ 物理/功能  │  │ Bootloader        │ │
+│  │ 协议栈    │  │ 协议栈    │  │ 寻址      │  │ 会话控制          │ │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────────────┘ │
+│                                                                   │
+└──────────────────────────┬───────────────────────────────────────┘
+                           │ SPI (通过中间件 SPI-CAN Gateway)
+                           ▼
+┌──────────────────────────────────────────────────────────────────┐
+│              MCU (CAN 收发层)                                     │
+│                                                                   │
+│  ┌─────────────┐  ┌─────────────┐  ┌──────────────────────────┐  │
+│  │ CAN0 (动力)  │  │ CAN1 (车身)  │  │ CAN2 (诊断专用)          │  │
+│  │ 网关/VCU    │  │ BCM/空调    │  │ 通过 DoIP 路由可达       │  │
+│  └──────┬──────┘  └──────┬──────┘  └──────────┬───────────────┘  │
+│         │                │                     │                  │
+└─────────┼────────────────┼─────────────────────┼──────────────────┘
+          ▼                ▼                     ▼
+      ┌────────┐    ┌────────┐            ┌────────────┐
+      │ VCU    │    │ BCM    │            │ 其他 ECU   │
+      │ ECU    │    │ ECU    │            │ (TBox自身) │
+      └────────┘    └────────┘            └────────────┘</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">1.1 关键角色定义</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">角色</th>
+<th style="padding:6px 10px">说明</th>
+<th style="padding:6px 10px">协议</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">**VDS**</td>
+<td style="padding:6px 10px">外接诊断设备（PC/平板），通过以太网连接 TBox</td>
+<td style="padding:6px 10px">DoIP (ISO 13400)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**DoIP Edge Node**</td>
+<td style="padding:6px 10px">TBox UDS Server，作为 VDS 与车辆网络的网关</td>
+<td style="padding:6px 10px">ISO 13400 + ISO 14229</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Target ECU**</td>
+<td style="padding:6px 10px">CAN 总线上被诊断的目标节点（VCU/BCM/...）</td>
+<td style="padding:6px 10px">UDS on CAN (ISO 15765-2)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**UDS Client**</td>
+<td style="padding:6px 10px">VDS 侧的诊断请求发起方</td>
+<td style="padding:6px 10px">DoIP</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**UDS Server**</td>
+<td style="padding:6px 10px">TBox 及目标 ECU 侧，处理诊断请求并响应</td>
+<td style="padding:6px 10px">UDS (ISO 14229)</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. 总体架构</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────────────────────┐
+│                      UDS 诊断服务应用 (SoC Linux)                          │
+│                                                                           │
+│  ┌──────────────────────────────────────────────────────────────────────┐ │
+│  │  ① DoIP 协议层 (ISO 13400)                                           │ │
+│  │                                                                       │ │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────┐  │ │
+│  │  │ TCP 路由激活      │  │ UDP 车辆发现      │  │ DoIP 消息编解码    │  │ │
+│  │  │ (VDS 连接管理)    │  │ (VIN/IP 广播)     │  │ (头部 + 负载)     │  │ │
+│  │  └──────────────────┘  └──────────────────┘  └────────────────────┘  │ │
+│  └──────────────────────────┬───────────────────────────────────────────┘ │
+│                             │                                             │
+│  ┌──────────────────────────┴───────────────────────────────────────────┐ │
+│  │  ② UDS 核心引擎 (ISO 14229)                                          │ │
+│  │                                                                       │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │ │
+│  │  │ 会话管理      │  │ 安全访问      │  │ DID 读写     │  │ DTC 管理 │  │ │
+│  │  │ 0x10         │  │ 0x27         │  │ 0x22/0x2E   │  │ 0x14/19  │  │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────┘  │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌────────────────────────────┐  │ │
+│  │  │ 例程控制      │  │ IO 控制      │  │ 程序烧录 (Bootloader)      │  │ │
+│  │  │ 0x31         │  │ 0x2F         │  │ 0x34/0x36/0x37             │  │ │
+│  │  └──────────────┘  └──────────────┘  └────────────────────────────┘  │ │
+│  └──────────────────────────┬───────────────────────────────────────────┘ │
+│                             │                                             │
+│  ┌──────────────────────────┴───────────────────────────────────────────┐ │
+│  │  ③ CAN 路由层 (ISO 15765-2)                                          │ │
+│  │                                                                       │ │
+│  │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌──────────┐  │ │
+│  │  │ 物理寻址      │  │ 功能寻址      │  │ 单帧/多帧    │  │ CAN-ID   │  │ │
+│  │  │ (N_TA 匹配)  │  │ (广播)       │  │ 组包/解包    │  │ 路由表   │  │ │
+│  │  └──────────────┘  └──────────────┘  └──────────────┘  └──────────┘  │ │
+│  └──────────────────────────┬───────────────────────────────────────────┘ │
+│                             │                                             │
+│  ┌──────────────────────────┴───────────────────────────────────────────┐ │
+│  │  ④ 通信适配层                                                         │ │
+│  │                                                                       │ │
+│  │  ┌──────────────────┐  ┌──────────────────┐  ┌────────────────────┐  │ │
+│  │  │ VDS 通信          │  │ CAN 通信          │  │ 本机诊断            │  │ │
+│  │  │ (DoIP TCP/UDP)   │  │ (ZMQ → SPI-CAN   │  │ (TBox 自身 DID)    │  │ │
+│  │  │ Port 13400       │  │  Gateway → vcan) │  │ (e.g. 系统版本)     │  │ │
+│  │  └──────────────────┘  └──────────────────┘  └────────────────────┘  │ │
+│  └──────────────────────────────────────────────────────────────────────┘ │
+│                                                                           │
+└──────────────────────────────────────────────────────────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart TB
+    subgraph UDS["UDS 诊断服务应用"]
+        subgraph L1["1 DoIP 协议层 (ISO 13400)"]
+            TCP["TCP 路由激活&lt;br/&gt;VDS 连接管理"]
+            UDP["UDP 车辆发现&lt;br/&gt;VIN/IP 广播"]
+            CODEC["DoIP 消息编解码"]
+        end
+        L1 --&gt; L2
+        subgraph L2["2 UDS 核心引擎 (ISO 14229)"]
+            S10["会话控制 0x10"]
+            S27["安全访问 0x27&lt;br/&gt;→ HSM Server"]
+            S22["DID 读写 0x22/0x2E"]
+            DTC["DTC 管理 0x14/0x19"]
+            S31["例程控制 0x31"]
+            S2F["IO 控制 0x2F"]
+            BOOT["程序烧录 0x34/0x36/0x37"]
+        end
+        L2 --&gt; L3
+        subgraph L3["3 CAN 路由层 (ISO 15765-2)"]
+            PHYS["物理寻址 N_TA"]
+            FUNC["功能寻址 广播"]
+            FRAME["单帧/多帧 组包解包"]
+            ROUTE["CAN-ID 路由表"]
+        end
+        L3 --&gt; L4
+        subgraph L4["4 通信适配层"]
+            VDS["VDS 通信 DoIP TCP/UDP Port 13400"]
+            CAN["CAN 通信 ZMQ→SPI-CAN GW→vcan"]
+            LOCAL["本机诊断 TBox 自身 DID"]
+        end
+    end
+    VDS --&gt;|"外接"| VDS_DEV["VDS 诊断设备"]
+    CAN --&gt;|"内部"| MCU["SPI-CAN Gateway → MCU → CAN Bus"]</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. 四层架构详解</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.1 DoIP 协议层 (ISO 13400)</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────┐
+│  DoIP Edge Node                                           │
+│                                                            │
+│  ┌──────────────────────────────────────────┐             │
+│  │  UDP Socket (Port 13400, 广播/组播)        │             │
+│  │  ─ VehicleDiscoveryRequest (0x0001)       │ ← VDS 发现 │
+│  │  ─ VehicleAnnouncement (0x0004)           │ → 广播声明  │
+│  └──────────────────────────────────────────┘             │
+│                                                            │
+│  ┌──────────────────────────────────────────┐             │
+│  │  TCP Socket (Port 13400)                  │             │
+│  │  ─ RoutingActivation (0x0005)             │ ← VDS 激活  │
+│  │  ─ DiagnosticMessage (0x8001)             │ ← UDS 请求  │
+│  │  ─ DiagnosticMessageAck (0x8002)          │ → 应答      │
+│  │  ─ AliveCheckRequest (0x0007)             │ ← 保活检查  │
+│  │  ─ AliveCheckResponse (0x0008)            │ → 保活应答  │
+│  └──────────────────────────────────────────┘             │
+│                                                            │
+│  连接生命周期：                                              │
+│  ┌──────┐  ┌──────────┐  ┌──────────────┐  ┌──────────┐  │
+│  │监听  │→│ TCP 连接  │→│ 路由激活      │→│ 诊断会话  │  │
+│  │UDP   │  │ (VDS)    │  │ (认证+授权)   │  │ (UDS)    │  │
+│  └──────┘  └──────────┘  └──────────────┘  └──────────┘  │
+│                                                            │
+│  并发控制：最多 1 个 VDS 同时诊断（安全策略）                │
+└──────────────────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**DoIP 报文格式**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────┬──────────┬────────────┬────────────┬──────────────┐
+│ 协议版本  │ 反向版本  │ 负载类型    │ 负载长度    │ 负载数据      │
+│ 0x02     │ 0xFD     │ 2B         │ 4B          │ Variable     │
+└──────────┴──────────┴────────────┴────────────┴──────────────┘</pre>
+
+<p style="margin:4px 0">**关键负载类型**：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">负载类型 (0xYYYY)</th>
+<th style="padding:6px 10px">方向</th>
+<th style="padding:6px 10px">功能</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0001</td>
+<td style="padding:6px 10px">VDS → TBox</td>
+<td style="padding:6px 10px">Vehicle Identification Request (VIN 查询)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0004</td>
+<td style="padding:6px 10px">TBox → VDS</td>
+<td style="padding:6px 10px">Vehicle Announcement (VIN/IP/EID 广播)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0005</td>
+<td style="padding:6px 10px">VDS → TBox</td>
+<td style="padding:6px 10px">Routing Activation (诊断路由激活请求)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0006</td>
+<td style="padding:6px 10px">TBox → VDS</td>
+<td style="padding:6px 10px">Routing Activation Response (激活应答)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x8001</td>
+<td style="padding:6px 10px">VDS → TBox</td>
+<td style="padding:6px 10px">Diagnostic Message (UDS 诊断请求封装)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x8002</td>
+<td style="padding:6px 10px">TBox → VDS</td>
+<td style="padding:6px 10px">Diagnostic Message Positive/Negative Ack</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0007</td>
+<td style="padding:6px 10px">VDS → TBox</td>
+<td style="padding:6px 10px">Alive Check Request (保活检查)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x0008</td>
+<td style="padding:6px 10px">TBox → VDS</td>
+<td style="padding:6px 10px">Alive Check Response</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.2 UDS 核心引擎 (ISO 14229)</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────────┐
+│  UDS 引擎 — 请求处理管线                                      │
+│                                                               │
+│  VDS DoIP 请求                                                │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌──────────────────────────────┐                             │
+│  │ ① 会话状态管理                │                             │
+│  │ ┌─────────┐ ┌──────────────┐ │                             │
+│  │ │ 默认会话  │→│ 扩展会话      │ │                             │
+│  │ │ (0x01)  │  │ (0x03)      │ │                             │
+│  │ └─────────┘ └──────────────┘ │                             │
+│  │ ┌─────────┐ ┌──────────────┐ │                             │
+│  │ │ 编程会话  │ │ 安全访问      │ │                             │
+│  │ │ (0x02)  │ │ (通过后解锁)  │ │                             │
+│  │ └─────────┘ └──────────────┘ │                             │
+│  └──────────────────────────────┘                             │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌──────────────────────────────┐                             │
+│  │ ② SID 分发                   │                             │
+│  │  ┌────────┐ ┌──────┐ ┌────┐ │                             │
+│  │  │本机处理  │ │路由  │ │拒绝│ │                             │
+│  │  │(TBox)  │ │到CAN │ │    │ │                             │
+│  │  └────────┘ └──────┘ └────┘ │                             │
+│  └──────────────────────────────┘                             │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌──────────────────────────────┐                             │
+│  │ ③ CAN 寻址 &amp; 发送            │                             │
+│  │ → SPI-CAN Gateway → MCU → CAN│                             │
+│  └──────────────────────────────┘                             │
+│       │                                                       │
+│       ▼                                                       │
+│  ┌──────────────────────────────┐                             │
+│  │ ④ 响应超时等待 &amp; 收帧         │                             │
+│  │ → 组包 → DoIP 应答 → VDS     │                             │
+│  └──────────────────────────────┘                             │
+└──────────────────────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**完整的 UDS SID 服务矩阵**：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">SID</th>
+<th style="padding:6px 10px">服务</th>
+<th style="padding:6px 10px">本机/CAN</th>
+<th style="padding:6px 10px">会话要求</th>
+<th style="padding:6px 10px">安全访问</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x10</td>
+<td style="padding:6px 10px">DiagnosticSessionControl</td>
+<td style="padding:6px 10px">本机</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x11</td>
+<td style="padding:6px 10px">ECUReset</td>
+<td style="padding:6px 10px">本机/CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x14</td>
+<td style="padding:6px 10px">ClearDiagnosticInformation</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x19</td>
+<td style="padding:6px 10px">ReadDTCInformation</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">默认/扩展</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x22</td>
+<td style="padding:6px 10px">ReadDataByIdentifier</td>
+<td style="padding:6px 10px">本机/CAN</td>
+<td style="padding:6px 10px">默认/扩展</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x23</td>
+<td style="padding:6px 10px">ReadMemoryByAddress</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x27</td>
+<td style="padding:6px 10px">SecurityAccess</td>
+<td style="padding:6px 10px">本机</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">— (本身)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x28</td>
+<td style="padding:6px 10px">CommunicationControl</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x2E</td>
+<td style="padding:6px 10px">WriteDataByIdentifier</td>
+<td style="padding:6px 10px">本机/CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x2F</td>
+<td style="padding:6px 10px">InputOutputControlByIdentifier</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x31</td>
+<td style="padding:6px 10px">RoutineControl</td>
+<td style="padding:6px 10px">本机/CAN</td>
+<td style="padding:6px 10px">扩展/编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x34</td>
+<td style="padding:6px 10px">RequestDownload</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x35</td>
+<td style="padding:6px 10px">RequestUpload</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x36</td>
+<td style="padding:6px 10px">TransferData</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x37</td>
+<td style="padding:6px 10px">RequestTransferExit</td>
+<td style="padding:6px 10px">CAN</td>
+<td style="padding:6px 10px">编程</td>
+<td style="padding:6px 10px">✅</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0x3E</td>
+<td style="padding:6px 10px">TesterPresent</td>
+<td style="padding:6px 10px">本机</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+<p style="margin:4px 0">**本机/路由决策逻辑**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">SID 分发:
+├── 本机处理 DID (TBox 自身系统信息):
+│   DID 0xF190 = 系统版本号
+│   DID 0xF191 = VIN
+│   DID 0xF192 = 硬件版本
+│   DID 0xF193 = 供应商信息
+│   └── 直接在 UDS Server 内部响应，不经过 CAN
+│
+├── CAN 路由 DID (目标 ECU):
+│   DID 0x0100~0xFFFF (非本机保留段)
+│   └── 封装为 ISO 15765-2 单帧/多帧 → CAN
+│
+└── 功能寻址 (CAN 广播):
+    发送到所有目标 ECU，收集回复并合并</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.3 CAN 路由层 (ISO 15765-2)</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────┐
+│  CAN 路由引擎                                               │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  CAN-ID 路由表                                        │  │
+│  │                                                       │  │
+│  │  ┌────────────┬──────────┬──────────┬──────────────┐  │  │
+│  │  │ Target     │ 物理请求  │ 物理应答  │ 功能请求      │  │  │
+│  │  │ ECU        │ CAN-ID   │ CAN-ID   │ CAN-ID       │  │  │
+│  │  ├────────────┼──────────┼──────────┼──────────────┤  │  │
+│  │  │ VCU        │ 0x18DAF1 │ 0x18DAF1 │ 0x18DBFF    │  │  │
+│  │  │             │          │          │              │  │  │
+│  │  │ BCM        │ 0x18DAF2 │ 0x18DAF2 │ 0x18DBFF    │  │  │
+│  │  │             │          │          │              │  │  │
+│  │  │ ABS        │ 0x18DAF3 │ 0x18DAF3 │ 0x18DBFF    │  │  │
+│  │  │             │          │          │              │  │  │
+│  │  │ GW         │ 0x18DAF4 │ 0x18DAF4 │ 0x18DBFF    │  │  │
+│  │  └────────────┴──────────┴──────────┴──────────────┘  │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                            │
+│  物理寻址 (N_TA = 目标 ECU 地址)：                           │
+│  VDS → DoIP → UDS → CAN-ID(物理请求) → CAN Bus → Target   │
+│  Target → CAN Bus → CAN-ID(物理应答) → UDS → DoIP → VDS   │
+│                                                            │
+│  功能寻址 (广播到一类 ECU)：                                 │
+│  VDS → DoIP → UDS → CAN-ID(功能请求) → CAN Bus → 所有 ECU │
+│  → 各 ECU 分别应答 → UDS 汇总 → DoIP → VDS                │
+│                                                            │
+│  ISO 15765-2 多帧传输：                                     │
+│  ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐                      │
+│  │ FF   │→│ CF   │→│ CF   │→│ CF   │→ ... → 收齐          │
+│  │ (首帧)│ │ (连续)│ │ (连续)│ │ (连续)│                     │
+│  └──────┘ └──────┘ └──────┘ └──────┘                      │
+│  FF: 首帧 (PCI + 数据长度 + 第一部分数据)                    │
+│  CF: 连续帧 (PCI + 后续数据)                               │
+│  FC: 流控制帧 (CTS/WAIT/OVFLW)                             │
+└──────────────────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**N_SA / N_TA 地址模型**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────┐
+│  逻辑地址分配                          │
+│                                        │
+│  N_SA (源地址 — TBox UDS Server):     │
+│  0x0E = TBox DoIP Edge Node           │
+│                                        │
+│  N_TA (目标地址 — Target ECU):        │
+│  0x01 = VCU (整车控制器)               │
+│  0x02 = BCM (车身控制器)               │
+│  0x03 = ABS (制动系统)                 │
+│  0x04 = GW (网关)                     │
+│  ...                                  │
+└──────────────────────────────────────┘</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.4 程序烧录管理 (Bootload)</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────────┐
+│  Bootload Manager (UDS 编程会话)                             │
+│                                                               │
+│  流程：                                                       │
+│                                                               │
+│  VDS                            TBox UDS Server    Target ECU │
+│   │                                    │               │      │
+│   │  DoIP: 0x10 0x02 (编程会话)         │               │      │
+│   │───────────────────────────────────→│               │      │
+│   │                                    │  CAN: 0x10 0x02      │
+│   │                                    │──────────────→│      │
+│   │                                    │←──────────────│      │
+│   │  DoIP: Positive Response           │               │      │
+│   │←───────────────────────────────────│               │      │
+│   │                                    │               │      │
+│   │  DoIP: 0x27 (安全访问)              │               │      │
+│   │───────────────────────────────────→│               │      │
+│   │                                    │  IPC → HSM Server    │
+│   │                                    │ (种子-密钥算法)      │
+│   │                                    │               │      │
+│   │  DoIP: 0x31 0x01 (例程控制-预编程)   │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                                    │               │      │
+│   │  DoIP: 0x34 (请求下载)              │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                                    │               │      │
+│   │  DoIP: 0x36 (传输数据) × N          │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                (多帧传输)           │ (ISO 15765-2) │      │
+│   │                                    │               │      │
+│   │  DoIP: 0x37 (请求退出传输)          │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                                    │               │      │
+│   │  DoIP: 0x31 0x02 (例程控制-后编程)  │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                                    │               │      │
+│   │  DoIP: 0x11 0x01 (ECU 复位)        │               │      │
+│   │───────────────────────────────────→│──────────────→│      │
+│   │                                    │               │      │
+│   ── VDS 侧完成烧录 ──                                    │
+│                                                               │
+│  🔗 与 OTA 的关系：                                           │
+│  OTA Agent 下载加密包 → 解密 → 解包                             │
+│  → IPC (ZMQ REQ/REP, ipc:///tmp/tbox_cgw_req.ipc)              │
+│  → UDS Server: 0x34/0x36/0x37 → CAN → Target ECU              │
+│  → UDS Server 负责 CAN 帧组装 + ISO 15765-2 拆包               │
+└──────────────────────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**烧录过程中的 UDS 服务时序**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">Step  SID   服务            说明
+────  ────  ─────────────  ───────────────────────────────
+ 1    0x10  编程会话       切换到编程会话 (session 0x02)
+ 2    0x27  安全访问       种子-密钥验证 (通过 HSM Server)
+ 3    0x31  例程控制       0x01 = EraseMemory (擦除)
+ 4    0x34  请求下载       指定下载地址 + 数据长度
+ 5    0x36  传输数据       N 帧固件数据 (ISO 15765-2 多帧)
+ 6    0x37  请求退出传输    完成传输
+ 7    0x31  例程控制       0x02 = CheckIntegrity (校验)
+ 8    0x11  ECU复位        软复位，加载新固件</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">4. VDS 诊断会话流程</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">VDS (远程)                    UDS Server (TBox)              Target ECU
+  │                                │                            │
+  │  ① 车辆发现 (UDP 广播)          │                            │
+  │── VehicleDiscoveryReq ────────→│                            │
+  │←── VehicleAnnouncement ────────│                            │
+  │    (VIN + IP + EID)           │                            │
+  │                                │                            │
+  │  ② DoIP 连接 (TCP)             │                            │
+  │── TCP connect (port 13400) ──→│                            │
+  │                                │                            │
+  │  ③ 路由激活                    │                            │
+  │── RoutingActivation ─────────→│                            │
+  │    (N_SA = VDS 逻辑地址)       │ 检查：源地址是否已激活       │
+  │←── RoutingActivationResponse ─│                            │
+  │    (Routing OK / Reject)     │                            │
+  │                                │                            │
+  │  ④ 诊断请求/响应循环            │                            │
+  │                                │                            │
+  │  ④-a 建立诊断会话               │                            │
+  │── DiagMsg: 0x10 0x03 ────────→│── CAN: 0x10 0x03 ──────→│
+  │   (扩展会话)                   │← CAN: 0x50 0x03 ────────│
+  │←── DiagMsgAck: 0x50 0x03 ────│                            │
+  │                                │                            │
+  │  ④-b 读取故障码                 │                            │
+  │── DiagMsg: 0x19 0x02 ────────→│── CAN: 0x19 0x02 ──────→│
+  │   (DTC 快照)                  │← CAN: 0x59 ... ─────────│
+  │←── DiagMsgAck: 0x59 ... ────│                            │
+  │                                │                            │
+  │  ④-c 读取数据 (DID)            │                            │
+  │── DiagMsg: 0x22 xxxx ────────→│  (本机/CAN 路由)          │
+  │←── DiagMsgAck: 0x62 ... ────│                            │
+  │                                │                            │
+  │  ④-d 写入参数 (标定)           │                            │
+  │── DiagMsg: 0x2E xxxx ────────→│── CAN: 0x2E ──────────→│
+  │   (需安全访问解锁)             │← CAN: 0x6E ─────────────│
+  │←── DiagMsgAck: 0x6E ────────│                            │
+  │                                │                            │
+  │  ④-e 例程控制 (功能测试)       │                            │
+  │── DiagMsg: 0x31 0x01 ───────→│── CAN: 0x31 ──────────→│
+  │   (执行例程)                   │← CAN: 0x71 ─────────────│
+  │←── DiagMsgAck: 0x71 ────────│                            │
+  │                                │                            │
+  │  ⑤ 保活检查 (AliveCheck)       │                            │
+  │── AliveCheckReq ─────────────→│                            │
+  │←── AliveCheckResp ────────────│                            │
+  │   (周期: 5s, 超时: 10s)       │                            │
+  │                                │                            │
+  │  ⑥ 断开连接                    │                            │
+  │── TCP FIN ──────────────────→│  释放路由激活状态            │</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">5. 本机 DID 定义 (TBox 自身诊断)</h2>
+
+<p style="margin:4px 0">UDS Server 内部直接处理以下 DID（不经 CAN 路由）：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">DID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">类型</th>
+<th style="padding:6px 10px">访问</th>
+<th style="padding:6px 10px">描述</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF180</td>
+<td style="padding:6px 10px">Bootloader版本</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">TBox Bootloader 版本号</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF190</td>
+<td style="padding:6px 10px">SystemVersion</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">SoC Linux 版本 + 中间件版本</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF191</td>
+<td style="padding:6px 10px">VIN</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">车辆识别码</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF192</td>
+<td style="padding:6px 10px">HardwareVersion</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">TBox 硬件版本 (PCB 版本号)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF193</td>
+<td style="padding:6px 10px">SupplierInfo</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">供应商 + 生产日期</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF194</td>
+<td style="padding:6px 10px">NetworkStatus</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">4G/WiFi/ETH 连接状态</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF195</td>
+<td style="padding:6px 10px">OTAStatus</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">OTA 升级状态 (来自 OTA Agent)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF1A0</td>
+<td style="padding:6px 10px">SystemTime</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">UTC 时间 (来自 Time Sync)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF1A1</td>
+<td style="padding:6px 10px">GNSSPosition</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">默认</td>
+<td style="padding:6px 10px">GPS 坐标</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF1C0</td>
+<td style="padding:6px 10px">DiagnosticSession</td>
+<td style="padding:6px 10px">Read/Write</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">当前诊断会话类型</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF1C1</td>
+<td style="padding:6px 10px">SecurityAccessSeed</td>
+<td style="padding:6px 10px">Read</td>
+<td style="padding:6px 10px">扩展</td>
+<td style="padding:6px 10px">安全访问种子</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">0xF1C2</td>
+<td style="padding:6px 10px">SecurityAccessKey</td>
+<td style="padding:6px 10px">Write</td>
+<td style="padding:6px 10px">扩展</td>
+<td style="padding:6px 10px">安全访问密钥</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">6. 与平台各系统的交互</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌────────────────────────────────────────────────────────────────────┐
+│                    平台依赖总图                                       │
+│                                                                     │
+│  ┌──────────────┐                                 ┌──────────────┐  │
+│  │   VDS (外接)   │                                 │  Cloud OCPP   │  │
+│  │  DoIP Client  │                                 │  平台         │  │
+│  └──────┬───────┘                                 └──────┬───────┘  │
+│         │ DoIP (TCP 13400)                               │          │
+│         ▼                                                │          │
+│  ┌──────────────────────────────────────────────────┐    │          │
+│  │              UDS 诊断服务应用                      │    │          │
+│  │                                                  │    │          │
+│  │  ┌──────────────┐  ┌──────────────────────────┐  │    │          │
+│  │  │ DoIP 协议栈   │  │ UDS 核心引擎              │  │    │          │
+│  │  │ TCP/UDP I/O  │  │ 本机DID / 会话/ 安全访问   │  │    │          │
+│  │  └──────┬───────┘  └──────────┬───────────────┘  │    │          │
+│  │         │                     │                   │    │          │
+│  │         │  CAN 路由            │ 安全访问(0x27)    │    │          │
+│  │         ▼                     ▼                   │    │          │
+│  │  ┌────────────────────────────────────────────┐   │    │          │
+│  │  │  SPI-CAN Gateway (middleware §3.2)          │   │    │          │
+│  │  │  └→ MCU → CAN Bus → Target ECU             │   │    │          │
+│  │  └────────────────────────────────────────────┘   │    │          │
+│  │                              ▲                    │    │          │
+│  │  ┌──────────────────────────┐│─────────────────┐  │    │          │
+│  │  │  HSM Server (middleware  ││                 │  │    │          │
+│  │  │  §3.5) — 种子-密钥算法   ││                 │  │    │          │
+│  │  └──────────────────────────┘│                 │  │    │          │
+│  │                              │                 │  │    │          │
+│  │  ┌──────────────────────────┐│                 │  │    │          │
+│  │  │  OTA Agent — 升级包烧录   ││   (调用 UDS     │  │    │          │
+│  │  │  调用 0x34/0x36/0x37     ││    CAN 路由)    │  │    │          │
+│  │  └──────────────────────────┘│                 │  │    │          │
+│  │                              ▼                 │  │    │          │
+│  │  ┌────────────────────────────────────────┐    │  │    │          │
+│  │  │  Comm Manager — 网络链路状态            │    │  │    │          │
+│  │  └────────────────────────────────────────┘    │  │    │          │
+│  │                                                 │    │          │
+│  └─────────────────────────────────────────────────┘    │          │
+│        │                           ▲                     │          │
+│        │ ZeroMQ (IPC)              │ ZeroMQ (IPC)        │          │
+│        ▼                           │                     ▼          │
+│  ┌──────────────┐            ┌──────────────┐      ┌──────────────┐ │
+│  │  Daemon      │            │  CloudGW      │      │  HTCU 站控   │ │
+│  │  Monitor     │            │  (远程诊断)   │      │  (诊断结果   │ │
+│  │  (进程保活)  │            │               │      │   上报)      │ │
+│  └──────────────┘            └──────────────┘      └──────────────┘ │
+└────────────────────────────────────────────────────────────────────┘</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">7. 硬件依赖链</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">UDS 功能</th>
+<th style="padding:6px 10px">硬件能力 ID</th>
+<th style="padding:6px 10px">中间件服务</th>
+<th style="padding:6px 10px">内核接口</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">DoIP 网络通信</td>
+<td style="padding:6px 10px">`net.eth`, `net.wifi`</td>
+<td style="padding:6px 10px">Comm Manager</td>
+<td style="padding:6px 10px">TCP/UDP port 13400</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">CAN 诊断路由</td>
+<td style="padding:6px 10px">`can.bus`</td>
+<td style="padding:6px 10px">SPI-CAN Gateway (§3.2)</td>
+<td style="padding:6px 10px">`/dev/vcan0`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">安全访问 (0x27)</td>
+<td style="padding:6px 10px">`security.hsm`</td>
+<td style="padding:6px 10px">HSM Server (§3.5)</td>
+<td style="padding:6px 10px">IPC → PKCS#11</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">程序烧录</td>
+<td style="padding:6px 10px">`storage.emmc`</td>
+<td style="padding:6px 10px">OTA Agent</td>
+<td style="padding:6px 10px">`/dev/mmcblk0`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">DID 时间戳</td>
+<td style="padding:6px 10px">`time.rtc`, `time.pps`</td>
+<td style="padding:6px 10px">Time Sync</td>
+<td style="padding:6px 10px">`/dev/rtc0`, `/dev/pps0`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">DID GNSS 坐标</td>
+<td style="padding:6px 10px">`time.gps`</td>
+<td style="padding:6px 10px">Time Sync</td>
+<td style="padding:6px 10px">`/dev/ttyGPS`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">远程诊断 (Cloud)</td>
+<td style="padding:6px 10px">`net.*`</td>
+<td style="padding:6px 10px">CloudGW</td>
+<td style="padding:6px 10px">ZMQ → CloudGW</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">进程保活</td>
+<td style="padding:6px 10px">`cpu`</td>
+<td style="padding:6px 10px">Daemon Monitor</td>
+<td style="padding:6px 10px">signalfd</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">超时计时</td>
+<td style="padding:6px 10px">`cpu`</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">qtimer (POSIX)</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">8. 安全策略</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">策略</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">**VDS 路由激活鉴权**</td>
+<td style="padding:6px 10px">仅允许授权的 VDS (EID 白名单) 激活诊断路由</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**单 VDS 独占**</td>
+<td style="padding:6px 10px">同一时间只允许一个 VDS 会话，防止冲突</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**安全访问 (0x27)**</td>
+<td style="padding:6px 10px">通过 HSM Server 执行种子-密钥算法，密钥不可导出</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**会话超时**</td>
+<td style="padding:6px 10px">扩展会话 5 分钟无活动自动退回默认会话</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**编程会话保护**</td>
+<td style="padding:6px 10px">进入编程会话前必须经过安全访问</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**CAN 总线隔离**</td>
+<td style="padding:6px 10px">诊断流量与业务 CAN 帧隔离，不影响正常通信</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**DoIP AliveCheck**</td>
+<td style="padding:6px 10px">VDS 断开或超时 → 释放路由 → 关闭 TCP 连接</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">9. 修订记录</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">版本</th>
+<th style="padding:6px 10px">日期</th>
+<th style="padding:6px 10px">修改内容</th>
+<th style="padding:6px 10px">修改人</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.1</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">初版 UDS 诊断服务设计（DoIP + UDS 核心 + CAN 路由 + 程序烧录）</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+</body></html>

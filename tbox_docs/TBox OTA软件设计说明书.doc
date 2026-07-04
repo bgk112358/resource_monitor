@@ -1,0 +1,605 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>固件远程升级框架</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">OTA — 固件远程升级框架设计</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">本文档描述 TBox OTA 子系统的技术架构框架，定义升级全生命周期（下载→验签→解包→烧录→回滚→重启）的标准化流程。<br>框架从实际嵌入式 OTA 工程代码中提炼，剥离业务数据与隐私数据，保留可复用的架构模式。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. 总体架构</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                      Cloud OTA Platform
+                            │ (HTTPS / MQTTS)
+                            ▼
+┌──────────────────────────────────────────────────────────┐
+│                    OTA Agent (SoC Linux)                  │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  ① OTA Engine Layer                                  │  │
+│  │  ┌─────────────┐ ┌───────────┐ ┌──────────────────┐ │  │
+│  │  │ Download     │ │ Decrypt   │ │ Unpack &amp; Scan    │ │  │
+│  │  │ (HTTPS/cURL) │ │ (AES-CBC) │ │ (tar + .info)   │ │  │
+│  │  └─────────────┘ └───────────┘ └──────────────────┘ │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────┴──────────────────────────────┐  │
+│  │  ② Upgrade Dispatcher                                │  │
+│  │  按模块类型分发升级任务到对应的烧录线程                 │  │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐            │  │
+│  │  │ CAN 通道  │ │ Modbus   │ │ 文件覆盖  │            │  │
+│  │  │ (MCU类)  │ │ (储能类)  │ │ (主机类)  │            │  │
+│  │  └──────────┘ └──────────┘ └──────────┘            │  │
+│  └──────────────────────┬──────────────────────────────┘  │
+│                         │                                  │
+│  ┌──────────────────────┴──────────────────────────────┐  │
+│  │  ③ Lifecycle &amp; Safety Layer                          │  │
+│  │  ┌────────────┐ ┌──────────┐ ┌────────────────────┐  │  │
+│  │  │ Memory     │ │ MD5      │ │ Rollback &amp;         │  │  │
+│  │  │ Guard      │ │ Verify   │ │ Recovery           │  │  │
+│  │  └────────────┘ └──────────┘ └────────────────────┘  │  │
+│  └──────────────────────────────────────────────────────┘  │
+│                                                           │
+│  ┌─────────────────────────────────────────────────────┐  │
+│  │  ④ IPC Layer (与 Main 进程通信)                      │  │
+│  │  ZeroMQ / Station Link / 共享内存                    │  │
+│  └─────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────┘
+          │              │              │
+          ▼              ▼              ▼
+     ┌────────┐  ┌──────────┐  ┌──────────────┐
+     │ CAN Bus│  │ Modbus   │  │ 本地文件系统   │
+     │ (MCU)  │  │ (储能)   │  │ (eMMC/NAND)  │
+     └────────┘  └──────────┘  └──────────────┘</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. 核心框架组件</h2>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.1 命名线程池 (Named ThreadPool)</h3>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">**来源**：`src/common/thread_pool.*` + `thread_manager.*`</blockquote>
+
+<p style="margin:4px 0">框架提供**按名称注册、按名称启停**的线程池，每个线程持有一个 `atomic_bool stop_flag` 供业务循环检测退出。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────┐
+│               ThreadManager                   │
+│  ┌──────────────────────────────────────────┐ │
+│  │  ThreadPool                              │ │
+│  │  ┌──────────────────────────────────────┐│ │
+│  │  │  Task[0] = { name:"Can-Receiver",    ││ │
+│  │  │              fn: CanReceiverThread,  ││ │
+│  │  │              stop_flag, started }    ││ │
+│  │  ├──────────────────────────────────────┤│ │
+│  │  │  Task[1] = { name:"Download-Thread", ││ │
+│  │  │              fn: DownloadThread,     ││ │
+│  │  │              stop_flag, started }    ││ │
+│  │  ├──────────────────────────────────────┤│ │
+│  │  │  Task[2] = { name:"Hmcu-Upgrade",   ││ │
+│  │  │              fn: HmcuUpgradeThread,  ││ │
+│  │  │              stop_flag, started }    ││ │
+│  │  └──────────────────────────────────────┘│ │
+│  └──────────────────────────────────────────┘ │
+│                                               │
+│  WorkerHook(tm, HmcuHook)   ← 子系统注册      │
+│  WorkerStartTask(tm, "..")  ← 按名启动        │
+│  WorkerStopTask(tm, "..")   ← 按名停止        │
+│  WorkerGetTaskStopFlag()    ← 获取退出标志     │
+└──────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**关键接口**：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">接口</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`thread_pool_init(pool, capacity)`</td>
+<td style="padding:6px 10px">初始化线程池，分配 task 数组</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`thread_pool_add_task(pool, fn, arg, name)`</td>
+<td style="padding:6px 10px">注册任务（不启动），返回 task_id</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`thread_pool_start_task_by_name(pool, name)`</td>
+<td style="padding:6px 10px">按名称启动线程</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`thread_pool_stop_task_by_name(pool, name)`</td>
+<td style="padding:6px 10px">设置 stop_flag，线程自行退出</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`thread_pool_join_task_by_name(pool, name)`</td>
+<td style="padding:6px 10px">等待线程退出</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`WorkerHook(tm, hook_fn)`</td>
+<td style="padding:6px 10px">子系统注册回调，在回调内填充 ThreadList</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`WorkerStartTask(tm, "ThreadName")`</td>
+<td style="padding:6px 10px">按名称启动单个线程</td>
+</tr>
+</table>
+
+
+<p style="margin:4px 0">**Hook 模式**——每个子系统通过 Hook 回调注册自己的线程列表：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">// 子系统实现
+int HmcuHook(ThreadManager* tm) {
+    ThreadList *list = malloc(sizeof(ThreadList) * 2);
+    list[0] = (ThreadList){ .name = "Can-Receiver",  .fn = CanReceiverThread,  .arg = tm };
+    list[1] = (ThreadList){ .name = "Hmcu-Upgrade",  .fn = HmcuUpgradeThread, .arg = tm };
+    tm-&gt;listCount = 2;
+    tm-&gt;list = list;
+    return 0;
+}
+
+// main.c 中注册
+WorkerHook(&amp;tm, HmcuHook);
+WorkerStartTask(&amp;tm, "Can-Receiver");    // 只启动 CAN 接收线程</pre>
+
+<p style="margin:4px 0">**设计要点**：</p>
+<p style="margin:4px 0">- 线程启动分离：先注册所有任务，再按需逐一启动（依赖就绪顺序）</p>
+<p style="margin:4px 0">- 每个任务独立 `stop_flag`，支持精确控制单个线程生命周期</p>
+<p style="margin:4px 0">- `Hook` 模式允许各子系统独立开发，main.c 仅做组装</p>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.2 Qt 风格定时器 (POSIX Timer)</h3>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">**来源**：`src/utils/qtimer.*`</blockquote>
+
+<p style="margin:4px 0">纯 POSIX 实现的 Qt 风格定时器，底层基于 `pthread` + `pthread_cond_timedwait` + `CLOCK_MONOTONIC`。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────┐
+│               qtimer_t                    │
+│  pthread_cond_timedwait(CLOCK_MONOTONIC)  │
+│  ┌─────────────┐  ┌────────────────────┐  │
+│  │ interval_ms  │  │  timeout_cb()      │  │
+│  │ deadline_ms  │  │  -&gt; user_data      │  │
+│  │ single_shot  │  │                    │  │
+│  │ active       │  │  业务回调           │  │
+│  └─────────────┘  └────────────────────┘  │
+└──────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**使用模式**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">static qtimer_t heartBeat;
+
+static void OnHeartBeat(void *user_data) {
+    ptcontext ptc = (ptcontext)user_data;
+    SendHeartBeat(ptc);                      // 业务回调
+}
+
+int InitTimer(void *ctx) {
+    qtimer_init(&amp;heartBeat, OnHeartBeat, ctx);
+    qtimer_set_interval(&amp;heartBeat, 1000);    // 1 秒周期
+    qtimer_set_single_shot(&amp;heartBeat, 0);     // 周期模式
+    qtimer_start_default(&amp;heartBeat);
+    return 0;
+}</pre>
+
+<p style="margin:4px 0">**关键接口**：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">接口</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_init(timer, cb, user_data)`</td>
+<td style="padding:6px 10px">初始化 + 创建工作线程</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_set_interval(timer, ms)`</td>
+<td style="padding:6px 10px">设置周期（运行中修改会重计）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_set_single_shot(timer, 1/0)`</td>
+<td style="padding:6px 10px">设置单次/周期模式</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_start_default(timer)`</td>
+<td style="padding:6px 10px">按当前 interval 启动</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_start(timer, ms)`</td>
+<td style="padding:6px 10px">启动并指定 interval</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_stop(timer)`</td>
+<td style="padding:6px 10px">停止定时器</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_destroy(timer)`</td>
+<td style="padding:6px 10px">销毁（停止线程并等待退出）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`qtimer_single_shot(ms, cb, data)`</td>
+<td style="padding:6px 10px">静态单次定时器，自动清理</td>
+</tr>
+</table>
+
+
+<p style="margin:4px 0">**设计要点**：</p>
+<p style="margin:4px 0">- 基于 `CLOCK_MONOTONIC`，不受系统时间调整（NTP/手动）影响</p>
+<p style="margin:4px 0">- 周期模式采用「当前时刻 + interval」算法，回调执行时间不影响下一次触发</p>
+<p style="margin:4px 0">- 运行中修改 interval 立即生效，重新从当前时刻计时</p>
+<p style="margin:4px 0">- 公开结构体而非不透明句柄，避免堆分配，业务侧直接 `qtimer_t t; qtimer_init(&amp;t, ...)`</p>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.3 线程安全消息队列 (环形缓冲区)</h3>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">**来源**：`src/common/message_queue.*`</blockquote>
+
+<p style="margin:4px 0">固定容量、定长槽位的线程安全环形队列，用于解耦生产者/消费者。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                   ┌─────────────────────────────────────┐
+  mq_try_push() → │  head → [slot][slot][slot]... ← tail │ → mq_try_pop()
+                   └─────────────────────────────────────┘
+                   mutex + not_empty + not_full</pre>
+
+<p style="margin:4px 0">**关键接口**：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">接口</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`mq_create(capacity, msg_size)`</td>
+<td style="padding:6px 10px">创建固定容量、固定槽大小的队列</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`mq_destroy(q)`</td>
+<td style="padding:6px 10px">销毁，释放所有资源</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`mq_try_push(q, data, len)`</td>
+<td style="padding:6px 10px">非阻塞入队，满时返回 -1</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`mq_try_pop(q, out, cap, &out_len)`</td>
+<td style="padding:6px 10px">非阻塞出队，空时返回 0</td>
+</tr>
+</table>
+
+
+<p style="margin:4px 0">**设计要点**：</p>
+<p style="margin:4px 0">- 纯非阻塞接口，适合中断/定时器上下文使用</p>
+<p style="margin:4px 0">- `msg_size` 上限截断（超过则截断而非溢出）</p>
+<p style="margin:4px 0">- 条件变量 `not_empty` / `not_full` 支持扩展为阻塞版本</p>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.4 内存安全门 (OOM Guard)</h3>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">**来源**：`src/utils/ota_guard.*`</blockquote>
+
+<p style="margin:4px 0">启动时预占物理内存，OTA 前释放并检查可用内存，防止升级过程中 OOM。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────┐
+│  启动时：ota_guard_init()                     │
+│  ┌──────────────────────────────────────────┐ │
+│  │ mmap(16MB) + 逐页写入 + mlock             │ │
+│  │ → 预占物理内存，防止被换出                 │ │
+│  └──────────────────────────────────────────┘ │
+│                                              │
+│  OTA 触发时：ota_guard_ready(&amp;avail)           │
+│  ┌──────────────────────────────────────────┐ │
+│  │ 1. munlock + munmap (释放 16MB)          │ │
+│  │ 2. 读取 /proc/meminfo MemAvailable       │ │
+│  │ 3. 检查 avail ≥ 16MB                     │ │
+│  │ 4. return true/false                     │ │
+│  └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘</pre>
+
+<p style="margin:4px 0">**阈值**：编译期宏 `OTA_GUARD_THRESHOLD_BYTES`（默认 16MB）</p>
+
+<hr>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">2.5 IPC 通信帧 (进程间状态同步)</h3>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">**来源**：`src/common/inner_comm.*` + `runloop.c`</blockquote>
+
+<p style="margin:4px 0">OTA 进程与 Main 进程之间通过命名 IPC 通道（基于 Station Link/ZMQ）定时同步状态。</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────┐          IPC           ┌──────────────┐
+│  OTA Agent   │ ◄────────────────────► │  Main Process │
+│  (升级进程)   │    /tmp/InterOTA2Main  │  (业务进程)   │
+│              │    /tmp/InterMain2OTA  │              │
+└──────────────┘                        └──────────────┘</pre>
+
+<p style="margin:4px 0">**IPC 帧格式**：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────┬──────┬──────┬──────┬────────────────┐
+│ ID   │ CRC  │ Len  │ Cnt  │     Payload     │
+│ 4B   │ 4B   │ 2B   │ 2B   │   Variable      │
+└──────┴──────┴──────┴──────┴────────────────┘
+  ┌────────────┬────────────┬──────────────────────┐
+  │  Cmd ID    │  Fields    │   Description         │
+  ├────────────┼────────────┼──────────────────────┤
+  │ CMD_STATUS │ Version    │ 软件版本号            │
+  │            │ IMEI/IMSI  │ 设备标识             │
+  │            │ Signal     │ 4G 信号质量           │
+  │            │ OtaSta     │ OTA 状态              │
+  └────────────┴────────────┴──────────────────────┘</pre>
+
+<p style="margin:4px 0">**同步机制**：100ms 周期定时器驱动 `InterComShot()` → 填充帧 → `InnerComSend()` → IPC 通道</p>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. OTA 生命周期状态机</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                 ┌──────────────┐
+                 │    Idle      │
+                 └──────┬───────┘
+                        │ 收到升级指令 (远程/本地)
+                        ▼
+                 ┌──────────────┐
+                 │  Pre-Check   │ ← ota_guard_ready() 内存检查
+                 └──────┬───────┘
+                        │ 通过
+                        ▼
+                 ┌──────────────┐
+                 │  Download    │ ← HTTPS 下载加密包
+                 └──────┬───────┘
+                        │ 成功
+                        ▼
+                 ┌──────────────┐
+                 │  Decrypt     │ ← AES-CBC 解密
+                 └──────┬───────┘
+                        │ 成功
+                        ▼
+                 ┌──────────────┐
+                 │  Unpack      │ ← tar 解包到临时目录
+                 └──────┬───────┘
+                        │ 成功
+                        ▼
+                 ┌──────────────────┐
+                 │  Module Scan     │ ← 扫描 .info 文件确定升级模块
+                 └──────┬───────────┘
+                        │
+         ┌──────────────┼──────────────────┐
+         ▼              ▼                  ▼
+   ┌──────────┐  ┌──────────┐  ┌──────────────────┐
+   │ CAN 烧录  │  │ Modbus   │  │ 文件覆盖烧录      │
+   │ (MCU类)  │  │ (储能类)  │  │ (主机/终端类)     │
+   └────┬─────┘  └────┬─────┘  └──────┬───────────┘
+        │              │               │
+        └──────────────┼───────────────┘
+                       │ 全部完成
+                       ▼
+                 ┌──────────────┐
+                 │  Verify      │ ← MD5 校验 / 回滚判断
+                 └──────┬───────┘
+                        │ 通过
+                        ▼
+                 ┌──────────────┐
+                 │  Post-       │ ← 执行 postinstall 脚本
+                 │  Install     │
+                 └──────┬───────┘
+                        │
+                        ▼
+                 ┌──────────────┐
+                 │  Reboot      │ ← sync + reboot
+                 └──────────────┘
+
+        回滚路径：
+        Verify 失败 ──→ Rollback ──→ 恢复备份文件 ──→ 标记失败</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">stateDiagram-v2
+    [*] --&gt; Idle
+    Idle --&gt; PreCheck: 收到升级指令
+    PreCheck --&gt; Idle: 内存不足 (ota_guard_ready 失败)
+    PreCheck --&gt; Download: 内存检查通过
+    Download --&gt; Download: 重试 (失败)
+    Download --&gt; Decrypt: HTTPS 下载成功
+    Decrypt --&gt; Download: 解密失败
+    Decrypt --&gt; Unpack: AES-CBC 解密成功
+    Unpack --&gt; Decrypt: 解包失败
+    Unpack --&gt; ModuleScan: tar 解包完成
+    ModuleScan --&gt; CAN_Flash: MCU 类
+    ModuleScan --&gt; Modbus_Flash: 储能类
+    ModuleScan --&gt; File_Flash: 主机/终端类
+    CAN_Flash --&gt; Verify
+    Modbus_Flash --&gt; Verify
+    File_Flash --&gt; Verify
+    Verify --&gt; Rollback: MD5 校验失败
+    Verify --&gt; PostInstall: 全部完成+校验通过
+    Rollback --&gt; [*]: 恢复备份 / 标记失败
+    PostInstall --&gt; Reboot: 执行 postinstall
+    Reboot --&gt; [*]: sync + reboot</pre>
+
+<p style="margin:4px 0">        回滚路径：</p>
+<p style="margin:4px 0">        Verify 失败 ──→ Rollback ──→ 恢复备份文件 ──→ 标记失败</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+---
+
+## 4. OTA 升级流水线设计
+
+### 4.1 HTTPS 下载引擎</pre>
+<p style="margin:4px 0">┌──────────────────────────────────────────────────────────────┐</p>
+<p style="margin:4px 0">│  DownloadThread (按名称注册到 ThreadPool)                     │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  ① DNS 刷新（RouterDnsFlush）                                 │</p>
+<p style="margin:4px 0">│  ② 可用内存检查（ota_guard_ready）                            │</p>
+<p style="margin:4px 0">│  ③ https_download_file(req)  ← cURL + OpenSSL (HSM)         │</p>
+<p style="margin:4px 0">│  ④ 下载成功 → 更新状态到 IPC 帧                               │</p>
+<p style="margin:4px 0">│  ⑤ base64_decode(key) + base64_decode(iv)                    │</p>
+<p style="margin:4px 0">│  ⑥ decrypt_file(encrypted, output, key, iv)  ← AES-CBC      │</p>
+<p style="margin:4px 0">│  ⑦ CheckUpgradePackage() → 解包 + 扫描模块                   │</p>
+<p style="margin:4px 0">│  ⑧ 启动各模块升级线程                                        │</p>
+<p style="margin:4px 0">└──────────────────────────────────────────────────────────────┘</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+### 4.2 模块扫描机制
+
+升级包解压后目录结构：</pre>
+<p style="margin:4px 0">/tmp/upgrade/</p>
+<p style="margin:4px 0">├── Htcu.info          ← 内容: 二进制文件名 (如 "app_v2.bin")</p>
+<p style="margin:4px 0">├── Hmcu.info          ← 内容: 固件文件名</p>
+<p style="margin:4px 0">├── Acu.info</p>
+<p style="margin:4px 0">├── upgrade.tar        ← 子模块打包 (终端类)</p>
+<p style="margin:4px 0">│   └── upgrade/</p>
+<p style="margin:4px 0">│       ├── Ttcu.info</p>
+<p style="margin:4px 0">│       ├── Tmcu.info</p>
+<p style="margin:4px 0">│       └── Tscreen.info</p>
+<p style="margin:4px 0">└── (各模块固件二进制)</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+扫描逻辑：
+1. 遍历预定义的模块类型列表（`MOD_TTCU` ~ `MOD_SCREEN`）
+2. 检查对应的 `.info` 文件是否存在
+3. 若存在，读取内容获得固件文件名
+4. 检查固件文件是否存在 → 标记 `g_needUpgrade[i] = 1`
+5. 汇总需要升级的模块列表，启动对应烧录线程
+
+### 4.3 多通道烧录引擎
+
+| 通道 | 适用模块 | 通信协议 | 升级方式 |
+|------|---------|---------|---------|
+| **CAN** | MCU, ACU, PDU, DC, AC, SoftStart, DCOBC | CAN UDS (ISO 14229) | 逐帧发送固件数据 |
+| **Modbus** | EMCU, BASU, CBMS, AIR, EPTC, EACCD | Modbus RTU | 寄存器写入 + 校验 |
+| **文件覆盖 (本地)** | HTCU (主控制器) | cp + MD5 + chmod | 备份 → 复制 → MD5校验 → 回滚 |
+| **文件覆盖 (终端)** | TTCU, TMCU, Screen | Ethernet TCP | tar 解包 → 信息扫描 → 以太网发送 |
+
+### 4.4 文件覆盖升级流程（主机类）</pre>
+<p style="margin:4px 0">┌──────────────────────────────────────────────────────────────┐</p>
+<p style="margin:4px 0">│  HTCU_Update()                                                │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  ① 读取 Htcu.info → 获取所有待更新文件列表                     │</p>
+<p style="margin:4px 0">│  ② 创建 /tmp/backup/ 备份目录                                 │</p>
+<p style="margin:4px 0">│  ③ 对每个文件:                                                │</p>
+<p style="margin:4px 0">│     a. 备份 /opt/xxx → /tmp/backup/xxx                        │</p>
+<p style="margin:4px 0">│     b. cp /opt/upgrade/xxx → /opt/xxx                          │</p>
+<p style="margin:4px 0">│     c. chmod 777                                               │</p>
+<p style="margin:4px 0">│     d. MD5 校验（GetFileMD5）                                 │</p>
+<p style="margin:4px 0">│     e. MD5 一致 → 删除源文件，继续                             │</p>
+<p style="margin:4px 0">│     f. MD5 不一致 → error_flag = 1，跳出                       │</p>
+<p style="margin:4px 0">│  ④ 如果 error_flag == 1:                                      │</p>
+<p style="margin:4px 0">│     → mv /tmp/backup/* /opt/ （全量回滚）                      │</p>
+<p style="margin:4px 0">│     → 标记 UPGRADE_FAULT                                       │</p>
+<p style="margin:4px 0">│  ⑤ 如果全部成功:                                              │</p>
+<p style="margin:4px 0">│     → ExecInstallScript()                                     │</p>
+<p style="margin:4px 0">│     → sleep(15) + sync + reboot                               │</p>
+<p style="margin:4px 0">└──────────────────────────────────────────────────────────────┘</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+### 4.5 CAN 总线升级流程（MCU 类）
+
+OTA Agent **不直接实现 CAN UDS 协议栈**，而是通过 UDS Server 的 CAN 路由能力完成 MCU 烧录。</pre>
+<p style="margin:4px 0">┌──────────────────────────────────────────────────────────────┐</p>
+<p style="margin:4px 0">│  OTA Agent → UDS Server → CAN 烧录                            │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  ① OTA Agent 读取 .info 文件 → 获取固件文件名                  │</p>
+<p style="margin:4px 0">│  ② OTA Agent 打开固件文件 → 分块读取（每块 ≤ 4KB）            │</p>
+<p style="margin:4px 0">│  ③ 对每一块：                                                 │</p>
+<p style="margin:4px 0">│     a. OTA Agent 通过 IPC 调用 UDS Server 的                    │</p>
+<p style="margin:4px 0">│        0x34 RequestDownload → 0x36 TransferData               │</p>
+<p style="margin:4px 0">│     b. UDS Server 负责 CAN 帧拆包 (ISO 15765-2 多帧)           │</p>
+<p style="margin:4px 0">│     c. UDS Server 通过 SPI-CAN Gateway → MCU → CAN Bus       │</p>
+<p style="margin:4px 0">│     d. 接收 0x36 应答 → 反馈 OTA Agent                        │</p>
+<p style="margin:4px 0">│  ④ 全部块传输完毕：                                           │</p>
+<p style="margin:4px 0">│     a. OTA Agent 调用 UDS Server: 0x37 RequestTransferExit   │</p>
+<p style="margin:4px 0">│     b. UDS Server → ECU 退出编程会话                           │</p>
+<p style="margin:4px 0">│     c. OTA Agent 更新升级进度                                  │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  UDS Server 职责：CAN 帧封包/解包、UDS 应答处理、超时重传      │</p>
+<p style="margin:4px 0">│  OTA Agent 职责：固件文件管理、分块策略、整体进度跟踪           │</p>
+<p style="margin:4px 0">└──────────────────────────────────────────────────────────────┘</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+**依赖**：`can.bus`（经 UDS Server → SPI-CAN Gateway → MCU）
+
+&gt; **设计原则**：OTA Agent 作为升级业务的**编排者**，不持有 CAN 协议栈实现。
+&gt; UDS 协议细节（0x10 会话控制、0x27 安全访问、0x34/36/37 传输）封装在 UDS Server 中（见 `UDS.md §3.2`）。
+&gt; 两者通过 IPC（ZMQ REQ/REP → `ipc:///tmp/tbox_cgw_req.ipc`）通信。
+
+---
+
+## 5. 心跳与登录状态机
+
+&gt; **来源**：`src/common/runloop.c` — LoginHeartBeatLoop</pre>
+<p style="margin:4px 0">┌──────────────────────────────────────────────────────────────┐</p>
+<p style="margin:4px 0">│  定时器: LoginHeartBeatShot (1 秒周期)                        │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  if (首次) → 发送登录报文，interval 改为 5 秒                  │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  if (未登录):                                                  │</p>
+<p style="margin:4px 0">│     if (loginNum &gt;= 3):                                       │</p>
+<p style="margin:4px 0">│       重新发送登录报文                                        │</p>
+<p style="margin:4px 0">│       重置 loginNum                                           │</p>
+<p style="margin:4px 0">│     else:                                                     │</p>
+<p style="margin:4px 0">│       loginNum++                                              │</p>
+<p style="margin:4px 0">│                                                               │</p>
+<p style="margin:4px 0">│  if (已登录):                                                  │</p>
+<p style="margin:4px 0">│     发送心跳报文                                               │</p>
+<p style="margin:4px 0">│     检测心跳应答是否超时：                                     │</p>
+<p style="margin:4px 0">│       if (RecvHeartCmdCnt 连续 checkCount 次未变化):           │</p>
+<p style="margin:4px 0">│         打印"心跳应答超时"警告                                  │</p>
+<p style="margin:4px 0">│       if (恢复变化):                                           │</p>
+<p style="margin:4px 0">│         打印"心跳应答恢复"                                      │</p>
+<p style="margin:4px 0">└──────────────────────────────────────────────────────────────┘</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+---
+
+## 6. 升级超时与异常处理
+
+| 场景 | 处理方式 |
+|------|---------|
+| 下载失败 | 重试（指数退避），标记 `OtaHttpsSta = 2` |
+| 解密失败 | 标记 `OtaMainSta = 0x04`（文件解压失败） |
+| MD5 校验失败 | 全量回滚（`/tmp/backup/*` → `/opt/*`） |
+| MCU 烧录超时 | 累计 `ttcuTimeoutValue`，超 3600s 强制退出 |
+| OTA 总超时 | 70 分钟无进展 → `OTA70MinsTimeoutExit()` |
+| 内存不足 | `ota_guard_ready()` 返回 false，拒绝进入升级 |
+| __attribute__((constructor)) | 启动时预分配内存（main 之前执行） |
+
+---
+
+
+
+
+
+## 7. 依赖链（硬件 → 中间件 → OTA）</pre>
+<p style="margin:4px 0">hardware.md                    middleware.md                  OTA.md</p>
+<p style="margin:4px 0">──────────                     ────────────                  ──────</p>
+<p style="margin:4px 0">SoC CPU                       → Daemon Monitor              ThreadManager 线程编排</p>
+<p style="margin:4px 0">eMMC (系统分区)                → OTA Agent                   升级包落地 / 双分区</p>
+<p style="margin:4px 0">eMMC (备份分区)                                              Rollback 备份目录</p>
+<p style="margin:4px 0">NAND                          → Log Manager                 升级日志记录</p>
+<p style="margin:4px 0">4G / WiFi / Ethernet          → Comm Manager                 HTTPS 下载通道</p>
+<p style="margin:4px 0">                              → CloudGW (MQTTS)             升级指令接收</p>
+<p style="margin:4px 0">                              → HSM Server                  升级包签名校验</p>
+<p style="margin:4px 0">HSM                           → (OpenSSL engine)            解密密钥存储</p>
+<p style="margin:4px 0">CAN Bus                       → SPI-CAN Gateway             MCU 模块烧录通道</p>
+<p style="margin:4px 0">Modbus RTU                    → (直接 tty)                  储能模块烧录通道</p>
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">
+---
+
+## 8. 编译配置
+
+| 宏 | 说明 |
+|----|------|
+| `OTA_NO_MQTT` | 禁用 MQTT 通道，使用 Socket 直连服务器（兼容模式） |
+| `OTA_GUARD_THRESHOLD_BYTES` | 内存安全门阈值，默认 16MB |
+| `OTA_ENABLE_GDB` | 添加 `-g -O0` 调试符号 |
+
+---
+
+## 9. 修订记录
+
+| 版本 | 日期 | 修改内容 | 修改人 |
+|------|------|---------|--------|
+| v0.1 | — | 初版 OTA 框架，从嵌入式工程提取通用架构模式 | — |</pre>
+</body></html>

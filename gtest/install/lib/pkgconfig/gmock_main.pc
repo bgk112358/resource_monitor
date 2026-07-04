@@ -1,0 +1,9 @@
+libdir=/home/ubuntu/Downloads/googletest-release-1.8.1/install/lib
+includedir=/home/ubuntu/Downloads/googletest-release-1.8.1/install/include
+
+Name: gmock_main
+Description: GoogleMock (with main() function)
+Version: 1.9.0
+URL: https://github.com/google/googletest
+Libs: -L${libdir} -lgmock_main 
+Cflags: -I${includedir} -DGTEST_HAS_PTHREAD=1 

@@ -1,0 +1,7 @@
+cmake_minimum_required(VERSION 3.10)
+project(stability_monitor C)
+set(CMAKE_C_STANDARD 11)
+add_executable(stability_monitor main.c)
+target_compile_options(stability_monitor PRIVATE -Wall -Wextra -O2 -D_GNU_SOURCE)
+target_link_libraries(stability_monitor PRIVATE pthread)
+install(TARGETS stability_monitor RUNTIME DESTINATION /opt/tbox/test)

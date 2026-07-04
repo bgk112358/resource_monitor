@@ -1,0 +1,252 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>本地进程间通信框架</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">Slink — 本地进程间通信 (IPC) 框架</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">Slink (Station Link) 是 TBox 平台**本地进程间通信框架**，基于 ZeroMQ 实现。<br>与 CloudGW 的区别：Slink **只处理本地 IPC 传输**，不涉及任何云端报文。<br>CloudGW 负责 MQTTS 上行/下行，Slink 负责进程间的本地数据交换。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. IPC 域划分</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────────────────┐
+│                    TBox 进程间通信平面                              │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  域 A：CloudGW 通道 (ZMQ) — 云端数据交换                    │    │
+│  │                                                            │    │
+│  │  ipc:///tmp/tbox_cgw_pub.ipc  ← CloudGW PUB (云端→本地)   │    │
+│  │  ipc:///tmp/tbox_cgw_sub.ipc  → CloudGW SUB (本地→云端)   │    │
+│  │  ipc:///tmp/tbox_cgw_rep.ipc  ← CloudGW REP (RPC 处理)   │    │
+│  │  ipc:///tmp/tbox_cgw_req.ipc  → CloudGW REQ (发起 RPC)   │    │
+│  │                                                            │    │
+│  │  参与进程：HTCU / TTCU / OTA / UDS ...                      │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  域 B：Slink 通道 (ZMQ) — 本地进程间数据交换                │    │
+│  │                                                            │    │
+│  │  /tmp/InterOTA2Main  ← OTA Agent → Main Process            │    │
+│  │  /tmp/InterMain2OTA  ← Main Process → OTA Agent            │    │
+│  │  + 扩展命名通道 (按需)                                       │    │
+│  │                                                            │    │
+│  │  参与进程：Main / OTA Agent / 中间件服务 / ...                │    │
+│  └──────────────────────────────────────────────────────────┘    │
+│                                                                   │
+│  ┌──────────────────────────────────────────────────────────┐    │
+│  │  域 C：共享内存 — 高频/低延迟数据交换                       │    │
+│  │                                                            │    │
+│  │  OCPP 共享内存 (ocppShareMem) ← Main ↔ OTA Agent           │    │
+│  │  系统运行时状态 (电量/电压/电流/温度)                        │    │
+│  └──────────────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. Slink 总框图</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                    ┌─────────────────────────────────────┐
+                    │          Daemon Monitor             │
+                    │   (进程生命周期管理)                  │
+                    └──────────────┬──────────────────────┘
+                                   │ 启动 / 停止 / 监控
+                                   │
+     ┌─────────────────────────────┼─────────────────────────────┐
+     │                             │                             │
+     ▼                             ▼                             ▼
+┌──────────────┐          ┌──────────────────┐          ┌──────────────┐
+│  Main Process │          │   OTA Agent       │          │  HTCU App    │
+│  (业务主进程)  │◄────────┤   (升级代理)      │          │  (站级应用)   │
+│              │  Slink   │                  │          │              │
+│  ocpp 状态    │  IPC     │  升级状态        │          │  充电控制      │
+│  路由管理     │          │  下载进度        │          │  功率调度      │
+│  登录心跳     │          │  烧录状态        │          │              │
+└──────────────┘          └──────────────────┘          └──────────────┘
+       │                        │                             │
+       │    ┌───────────────────┼─────────────────────────────┘
+       │    │                   │
+       ▼    ▼                   ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      Slink IPC 通道                               │
+│                                                                   │
+│  底层：ZeroMQ (CZMQ) — station_link 封装                          │
+│                                                                   │
+│  ┌──────────────────────┐  ┌────────────────────────────────┐    │
+│  │ 命名 IPC 通道          │  │ 共享内存                       │    │
+│  │                       │  │                                │    │
+│  │ InterOTA2Main        │  │ ocppShareMem                   │    │
+│  │ InterMain2OTA        │  │ (OCPP 状态 / 充电数据)          │    │
+│  │ (按需扩展更多通道)     │  │                                │    │
+│  └──────────────────────┘  └────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart TB
+    DM["Daemon Monitor&lt;br/&gt;进程生命周期管理"]
+    DM --&gt; MAIN
+    DM --&gt; OTA
+    DM --&gt; HTCU
+
+    MAIN["Main Process&lt;br/&gt;业务主进程"]
+    OTA["OTA Agent&lt;br/&gt;升级代理"]
+    HTCU["HTCU App&lt;br/&gt;站级应用"]
+
+    MAIN &lt;--&gt;|"Slink IPC"| OTA
+    MAIN --&gt; SLINK
+    OTA --&gt; SLINK
+    HTCU --&gt; SLINK
+
+    subgraph SLINK["Slink IPC 通道 - ZeroMQ (CZMQ)"]
+        NAMED["命名 IPC 通道&lt;br/&gt;InterOTA2Main&lt;br/&gt;InterMain2OTA"]
+        SHARED["共享内存&lt;br/&gt;ocppShareMem"]
+    end</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. IPC 帧格式</h2>
+
+<p style="margin:4px 0">Slink 使用定长帧 + 变长载荷的协议格式：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────┬──────┬──────┬──────┬────────┬────────────────┐
+│ ID   │ CRC  │ Len  │ Cnt  │ Cmd    │ Payload         │
+│ 4B   │ 4B   │ 2B   │ 2B   │ 4B     │ Variable (≤4KB) │
+└──────┴──────┴──────┴──────┴────────┴────────────────┘</pre>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">字段</th>
+<th style="padding:6px 10px">说明</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">`ID`</td>
+<td style="padding:6px 10px">帧标识 (固定 UID 0x12345678)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`CRC`</td>
+<td style="padding:6px 10px">载荷校验</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`Len`</td>
+<td style="padding:6px 10px">帧总长度</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`Cnt`</td>
+<td style="padding:6px 10px">递增序列号，防重放/乱序</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`Cmd`</td>
+<td style="padding:6px 10px">命令标识 (如 `CMD_0001_GEN=0x1`)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">`Payload`</td>
+<td style="padding:6px 10px">载荷数据 (包含版本/IMEI/信号/OTA 状态等)</td>
+</tr>
+</table>
+
+
+<p style="margin:4px 0">**同步机制**：100ms 周期定时器驱动 `InterComShot()` → 填充帧 → `InnerComSend()` → Slink IPC</p>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">4. 典型数据流</h2>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                      ┌────────────────────────────┐
+                      │     100ms 周期定时器         │
+                      │     (runloop.c)            │
+                      └────────────┬───────────────┘
+                                   │
+                                   ▼
+                    ┌──────────────────────────────┐
+                    │  填充 InterComFrame 数据       │
+                    │  (版本/IMEI/IMSI/信号/OTA 状态) │
+                    └────────────┬─────────────────┘
+                                 │ InnerComSend()
+                                 ▼
+                    ┌──────────────────────────────┐
+                    │  Slink IPC 通道               │
+                    │  (ZeroMQ → station_link)      │
+                    └────────────┬─────────────────┘
+                                 │
+                                 ▼
+                    ┌──────────────────────────────┐
+                    │  Main Process                 │
+                    │  (收到状态帧，更新运行时数据)    │
+                    └──────────────────────────────┘</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">5. 与 CloudGW 的职责边界</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">维度</th>
+<th style="padding:6px 10px">**Slink (本地 IPC)**</th>
+<th style="padding:6px 10px">**CloudGW (云端网关)**</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">**通信方向**</td>
+<td style="padding:6px 10px">进程↔进程（本地）</td>
+<td style="padding:6px 10px">本地↔云端（远程）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**底层协议**</td>
+<td style="padding:6px 10px">ZeroMQ (IPC 模式)</td>
+<td style="padding:6px 10px">MQTTS + ZeroMQ (本地)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**通道标识**</td>
+<td style="padding:6px 10px">`/tmp/Inter*` 命名通道</td>
+<td style="padding:6px 10px">`ipc:///tmp/tbox_cgw_*.ipc`</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**数据类型**</td>
+<td style="padding:6px 10px">本地状态帧 / OTA 进度</td>
+<td style="padding:6px 10px">云上下行报文 / Topic 路由</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**参与进程**</td>
+<td style="padding:6px 10px">Main / OTA Agent</td>
+<td style="padding:6px 10px">HTCU / TTCU / UDS / 等</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**业务载荷**</td>
+<td style="padding:6px 10px">系统状态、升级状态、心跳</td>
+<td style="padding:6px 10px">充电数据、交易记录、远程指令</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**周期性**</td>
+<td style="padding:6px 10px">100ms 周期推送</td>
+<td style="padding:6px 10px">事件驱动 + 1s 心跳</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">6. 修订记录</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">版本</th>
+<th style="padding:6px 10px">日期</th>
+<th style="padding:6px 10px">修改内容</th>
+<th style="padding:6px 10px">修改人</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.1</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">初版 Slink 本地 IPC 框图</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+</body></html>

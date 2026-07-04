@@ -1,0 +1,838 @@
+<html xmlns:o="urn:schemas-microsoft-com:office:office"
+xmlns:w="urn:schemas-microsoft-com:office:word"
+xmlns="http://www.w3.org/TR/REC-html40">
+<head><meta charset="UTF-8">
+<title>TBox平台硬件能力框架</title>
+<style>
+body{font-family:"Microsoft YaHei","SimSun",sans-serif;font-size:10.5pt;line-height:1.6;color:#333;margin:60px 72px}
+@page{size:A4;margin:2.54cm 3.18cm 2.54cm 3.18cm}
+h1,h2,h3,h4{font-family:"Microsoft YaHei",sans-serif}
+table{font-size:9pt}
+pre,code{font-size:9pt}
+</style></head><body>
+<h1 style="font-size:18pt;color:#1F3864;margin:14px 0 6px">TBox 平台硬件能力框架</h1>
+
+<blockquote style="border-left:4px solid #4472C4;margin:12px 0;padding:8px 16px;background:#f2f2f2;color:#555">本文档定义了 TBox 平台的硬件资源矩阵，以及在嵌入式 Linux 环境下各硬件的**能力分层**与**依赖关系**。<br>各硬件能力以「能力单元」形式组织，供上层系统（中间件 / 应用层）按需引用。</blockquote>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">1. 能力分层模型</h2>
+
+<p style="margin:4px 0">TBox 为**双处理器架构**：SoC (AP, 运行 Linux) + MCU (运行 RTOS/Baremetal, 直连车辆总线)。</p>
+<p style="margin:4px 0">每个硬件单元按五层模型组织：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">┌──────────────────────────────────────────────────────┐
+│  Userspace   用户空间能力 (SoC Linux)                  │  ← 应用 / 中间件直接调用的接口
+├──────────────────────────────────────────────────────┤
+│  Kernel      SoC 内核驱动 / 子系统                      │  ← 设备树、驱动、子系统抽象
+├──────────────────────────────────────────────────────┤
+│  SoC Phys    SoC 物理器件 (SPI/UART/USB/Ethernet/...) │  ← SoC 级外设
+├──────────────────────────────────────────────────────┤
+│  Bridge      MCU 桥接层                               │  ← 转发 CANFD / 实时控制 / 看门狗
+├──────────────────────────────────────────────────────┤
+│  Vehicle     MCU 直连的车辆总线与传感器                 │  ← CANFD / 部分 GPIO / PWM
+└──────────────────────────────────────────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">flowchart TB
+    subgraph L1["Layer 1: Userspace"]
+        U["用户空间能力 (SoC Linux)&lt;br/&gt;应用 / 中间件接口"]
+    end
+    subgraph L2["Layer 2: Kernel"]
+        K["SoC 内核驱动 / 子系统&lt;br/&gt;设备树、驱动、子系统抽象"]
+    end
+    subgraph L3["Layer 3: SoC Phys"]
+        S["SoC 物理器件&lt;br/&gt;SPI / UART / USB / Ethernet"]
+    end
+    subgraph L4["Layer 4: Bridge"]
+        B["MCU 桥接层&lt;br/&gt;转发 CANFD / 实时控制 / 看门狗"]
+    end
+    subgraph L5["Layer 5: Vehicle"]
+        V["MCU 直连车辆总线&lt;br/&gt;CANFD / GPIO / PWM"]
+    end
+    L1 --&gt; L2 --&gt; L3 --&gt; L4 --&gt; L5</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">2. 硬件能力矩阵</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">模块</th>
+<th style="padding:6px 10px">硬件接口 / 器件</th>
+<th style="padding:6px 10px">内核层</th>
+<th style="padding:6px 10px">用户空间能力</th>
+<th style="padding:6px 10px">依赖链</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">**CPU**</td>
+<td style="padding:6px 10px">SoC (Arm Cortex-A 系列)</td>
+<td style="padding:6px 10px">smp, cpufreq, cpuset, irqchip, clk</td>
+<td style="padding:6px 10px">多核调度 / 频率缩放 / 中断绑定 / 隔离</td>
+<td style="padding:6px 10px">无（基础平台）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**DDR**</td>
+<td style="padding:6px 10px">LPDDR4 / LPDDR4x</td>
+<td style="padding:6px 10px">CMA, memblock, ion, dmabuf</td>
+<td style="padding:6px 10px">内存分配策略 / CMA 预留 / 大页 / 内存压力通知</td>
+<td style="padding:6px 10px">CPU→DDR 总线</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**NAND**</td>
+<td style="padding:6px 10px">并行 NAND Flash</td>
+<td style="padding:6px 10px">MTD, UBI, ubifs</td>
+<td style="padding:6px 10px">OTA 备份分区 / 日志存储 / 冗余引导</td>
+<td style="padding:6px 10px">CPU→NAND Controller</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**eMMC**</td>
+<td style="padding:6px 10px">eMMC 5.1</td>
+<td style="padding:6px 10px">MMC block 层, ext4, squashfs</td>
+<td style="padding:6px 10px">系统分区 / 应用存储 / 配置持久化</td>
+<td style="padding:6px 10px">CPU→eMMC Controller</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**MCU**</td>
+<td style="padding:6px 10px">车规 MCU (e.g. NXP S32K / Infineon TC3xx)</td>
+<td style="padding:6px 10px">— (无 Linux 内核，运行 RTOS/Baremetal)</td>
+<td style="padding:6px 10px">CANFD 数据转发 / 实时 IO / 看门狗 / 电源状态上报</td>
+<td style="padding:6px 10px">CPU(SoC) ↔ SPI ↔ MCU</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**CANFD**</td>
+<td style="padding:6px 10px">MCU 内部 CAN FD Controller + CAN PHY</td>
+<td style="padding:6px 10px">MCU 固件转发 → SoC SPI → spidev → 中间件 SPI-CAN Gateway → 虚拟 SocketCAN</td>
+<td style="padding:6px 10px">CAN 总线通信 / 诊断 (ISO 14229) / 固件刷写</td>
+<td style="padding:6px 10px">SoC SPI → MCU SPI Slave → MCU CAN Controller → CAN PHY → CAN Bus</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**RS485/RS422**</td>
+<td style="padding:6px 10px">UART + RS485 PHY (自动方向控制)</td>
+<td style="padding:6px 10px">tty serial, RS485 flags (termios)</td>
+<td style="padding:6px 10px">串口通信 / Modbus RTU / 调试控制台</td>
+<td style="padding:6px 10px">CPU→UART→RS485 PHY</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**SPI**</td>
+<td style="padding:6px 10px">SoC SPI Controller (QSPI/SPI) + MCU SPI</td>
+<td style="padding:6px 10px">spidev, MTD (SPI NOR)</td>
+<td style="padding:6px 10px">**MCU↔SoC 核间通信** / CANFD 报文转发 / SPI NOR Flash 读写 / 外设控制</td>
+<td style="padding:6px 10px">CPU→SPI Controller ↔ MCU SPI</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Ethernet**</td>
+<td style="padding:6px 10px">RGMII / RMII MAC + PHY</td>
+<td style="padding:6px 10px">net 子系统, PHY 驱动, ptp</td>
+<td style="padding:6px 10px">TCP/IP 协议栈 / VLAN / PTP (gPTP)</td>
+<td style="padding:6px 10px">CPU→MAC→PHY→Ethernet Switch</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Ethernet Switch**</td>
+<td style="padding:6px 10px">板载 Switch 芯片 (e.g. KSZ9896 / DP83869)</td>
+<td style="padding:6px 10px">DSA 驱动框架, bridge, iptables</td>
+<td style="padding:6px 10px">端口转发 / VLAN 划分 / 流量整形 / 镜像</td>
+<td style="padding:6px 10px">CPU→MAC→Switch PHY</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**USB**</td>
+<td style="padding:6px 10px">USB 2.0 / 3.0 Host + OTG</td>
+<td style="padding:6px 10px">usb core, gadget, hub 驱动</td>
+<td style="padding:6px 10px">USB 主机 (4G/WiFi dongle) / Gadget 模式 (RNDIS/ACM)</td>
+<td style="padding:6px 10px">CPU→USB Controller→PHY</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**WiFi**</td>
+<td style="padding:6px 10px">SDIO / USB WiFi 模组</td>
+<td style="padding:6px 10px">cfg80211, mac80211 / nl80211</td>
+<td style="padding:6px 10px">AP / STA 模式 / WPA2/WPA3 / 热点扫描</td>
+<td style="padding:6px 10px">CPU→SDIO/USB→WiFi Chip</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**4G / LTE**</td>
+<td style="padding:6px 10px">USB / PCIe 蜂窝模组</td>
+<td style="padding:6px 10px">qmi_wwan / cdc_mbim / rndis</td>
+<td style="padding:6px 10px">PPP / QMI / MBIM 拨号 / AT 指令</td>
+<td style="padding:6px 10px">CPU→USB/PCIe→Modem→SIM 卡</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**GPS (GNSS)**</td>
+<td style="padding:6px 10px">UART / I2C GNSS 接收器</td>
+<td style="padding:6px 10px">tty serial, pps 子系统, gnss 框架</td>
+<td style="padding:6px 10px">NMEA 0183 解析 / 定位数据上报 / PPS 脉冲</td>
+<td style="padding:6px 10px">CPU→UART→GNSS→GPS 天线</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**HSM**</td>
+<td style="padding:6px 10px">独立安全芯片 (e.g. SLM9670 / OPTIGA)</td>
+<td style="padding:6px 10px">spi / i2c 加密驱动, pkcs11</td>
+<td style="padding:6px 10px">密钥存储 / 签名验签 / TLS 握手加速</td>
+<td style="padding:6px 10px">CPU→SPI/I2C→HSM</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**Power Management**</td>
+<td style="padding:6px 10px">PMIC (e.g. PF8100 / AXP)</td>
+<td style="padding:6px 10px">regulator, power_supply, reboot</td>
+<td style="padding:6px 10px">电压调节 / 低功耗模式 / RTC 唤醒 / 关机</td>
+<td style="padding:6px 10px">PMIC→CPU 电源轨</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**RTC / UTC**</td>
+<td style="padding:6px 10px">SoC 内部 RTC + 外部 RTC 芯片</td>
+<td style="padding:6px 10px">rtc 子系统, NTP</td>
+<td style="padding:6px 10px">系统时间同步 / 硬件时钟 / 休眠保持</td>
+<td style="padding:6px 10px">RTC→后备电池→CPU</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">**PPS**</td>
+<td style="padding:6px 10px">GNSS PPS 引脚 + SoC GPIO</td>
+<td style="padding:6px 10px">pps-gpio 驱动, phc2sys</td>
+<td style="padding:6px 10px">亚微秒级时间戳 / gPTP 时钟同步</td>
+<td style="padding:6px 10px">GPS→PPS→SoC GPIO→TSN</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">3. 能力依赖链总图</h2>
+
+<p style="margin:4px 0">以下是关键硬件能力之间的依赖关系（**→** 表示「依赖」）：</p>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.1 时间同步链</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">GPS(GNSS)  ──NMEA──→  UTC 时间同步 ──→  系统时钟 (timedatectl)
+    │
+    └──PPS GPIO──→  PPS 设备 (/dev/pps0) ──→  phc2sys / ptp4l ──→  gPTP (TSN)
+                        │
+                        └──→  Ethernet MAC (PTP Hardware Clock)</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.2 网络链路</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">4G/LTE ──USB/PCIe──→ qmi_wwan ──→ 蜂窝网 (WAN)
+WiFi   ──SDIO/USB──→ wlan0    ──→ 无线网 (LAN/WAN)
+Ethernet──RGMII──→ eth0       ──→ 有线网 (VLAN 管理)
+                    │
+Ethernet Switch──DSA──→ lan1~lanN ──→ 内部设备互联</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.3 存储链路</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">eMMC ──MMC──→ /dev/mmcblk0 ──→ 系统分区 (rootfs / app)
+NAND ──MTD──→ /dev/mtd*    ──→ OTA 备份 / 日志 / UBIFS
+SPI NOR──SPI──→ /dev/mtd*  ──→ Bootloader / 环境变量</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.4 安全链路</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">HSM ──SPI/I2C──→ pkcs11 引擎 ──→ TLS / 签名 / 加密
+                    │
+HSM ─────→ 密钥注入 ──→ 安全启动校验 ──→ 固件验签
+                    │
+HSM ─────→ V2X 安全证书存储 ──→ C-V2X 安全通信</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.5 通信链路</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">CAN Bus ──CAN PHY──→ MCU CAN FD Controller ──MCU SPI──→ SoC SPI (spidev)
+    │                                                        │
+    │              ┌─────────────────────────────────────────┘
+    │              ▼
+    │     SPI-CAN Gateway (中间件) ──虚拟 CAN──→ 应用层 (UDS / 路由)
+    │
+RS485 ──tty──→ /dev/tty*     ──→ Modbus / 串口外设
+SPI   ──spidev──→ /dev/spidev*   ──→ MCU 通信 / 传感器 / SPI NOR</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">3.6 功耗管理链路</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">PMIC ──regulator──→ CPU 电压轨 ──→ cpufreq / 动态调频
+PMIC ──power_supply──→ 电池管理 ──→ 电量上报
+PMIC ──wakeup──→ RTC 闹钟 / GPIO 唤醒 ──→ 深睡眠 → 定时唤醒</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">4. 能力单元清单</h2>
+
+<p style="margin:4px 0">每个能力单元是一个可注册、可查询的功能抽象，对应一个 **"能力 ID + 提供者 + 接口路径 + 依赖声明"**。</p>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.1 CPU</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">属性</th>
+<th style="padding:6px 10px">值</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力 ID</td>
+<td style="padding:6px 10px">cpu</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力名称</td>
+<td style="padding:6px 10px">CPU 计算能力</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">内核接口</td>
+<td style="padding:6px 10px">/sys/devices/system/cpu/, /sys/bus/cpu/</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">设备节点</td>
+<td style="padding:6px 10px">cpu0 ~ cpuN</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">提供的能力</td>
+<td style="padding:6px 10px">算力 / 核心数 / 频率缩放 / 中断控制</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">依赖</td>
+<td style="padding:6px 10px">SoC 总线→DDR→电源</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.2 存储类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">storage.emmc</td>
+<td style="padding:6px 10px">eMMC 存储</td>
+<td style="padding:6px 10px">/dev/mmcblk0</td>
+<td style="padding:6px 10px">MMC block</td>
+<td style="padding:6px 10px">系统 / 应用 / 配置</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">storage.nand</td>
+<td style="padding:6px 10px">NAND 存储</td>
+<td style="padding:6px 10px">/dev/mtd*</td>
+<td style="padding:6px 10px">MTD + UBI</td>
+<td style="padding:6px 10px">OTA 备份 / 日志</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">storage.spinor</td>
+<td style="padding:6px 10px">SPI NOR Flash</td>
+<td style="padding:6px 10px">/dev/mtd*</td>
+<td style="padding:6px 10px">MTD</td>
+<td style="padding:6px 10px">Bootloader / 环境变量</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.3 MCU（桥接处理器）</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">属性</th>
+<th style="padding:6px 10px">值</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力 ID</td>
+<td style="padding:6px 10px">mcu.bridge</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力名称</td>
+<td style="padding:6px 10px">MCU 桥接层</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">通信链路</td>
+<td style="padding:6px 10px">SPI（SoC ↔ MCU）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">运行环境</td>
+<td style="padding:6px 10px">RTOS / Baremetal（无 Linux）</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">提供的能力</td>
+<td style="padding:6px 10px">CANFD 透明转发 / 实时 IO / 电源状态管理 / 硬件看门狗</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">依赖</td>
+<td style="padding:6px 10px">SoC SPI ↔ MCU SPI → 电源</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.4 CAN</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">属性</th>
+<th style="padding:6px 10px">值</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力 ID</td>
+<td style="padding:6px 10px">can.bus</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">能力名称</td>
+<td style="padding:6px 10px">CAN/CANFD 总线</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">设备节点</td>
+<td style="padding:6px 10px">中间件虚拟 can 接口 (vcan/spican)</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">内核子系统</td>
+<td style="padding:6px 10px">SocketCAN (net/can) — MCU 通过 SPI 转发到 SoC 后注入</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">提供的能力</td>
+<td style="padding:6px 10px">标准帧 / 扩展帧 / CAN FD / 波特率动态配置 / 总线错误检测</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">依赖</td>
+<td style="padding:6px 10px">SoC SPI ↔ MCU SPI → MCU CAN Controller → CAN PHY</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.5 网络类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">net.eth</td>
+<td style="padding:6px 10px">以太网</td>
+<td style="padding:6px 10px">eth0</td>
+<td style="padding:6px 10px">net + PHY</td>
+<td style="padding:6px 10px">有线 IP 通信</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">net.switch</td>
+<td style="padding:6px 10px">交换机</td>
+<td style="padding:6px 10px">lan1~N (DSA)</td>
+<td style="padding:6px 10px">DSA bridge</td>
+<td style="padding:6px 10px">端口转发 / VLAN</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">net.wifi</td>
+<td style="padding:6px 10px">WiFi</td>
+<td style="padding:6px 10px">wlan0</td>
+<td style="padding:6px 10px">cfg80211</td>
+<td style="padding:6px 10px">无线 AP/STA</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">net.cellular</td>
+<td style="padding:6px 10px">4G/LTE</td>
+<td style="padding:6px 10px">wwan0</td>
+<td style="padding:6px 10px">qmi_wwan / MBIM</td>
+<td style="padding:6px 10px">蜂窝数据</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">net.ptp</td>
+<td style="padding:6px 10px">PTP 硬件时间戳</td>
+<td style="padding:6px 10px">ethtool -T eth0</td>
+<td style="padding:6px 10px">PTP clock</td>
+<td style="padding:6px 10px">gPTP 时间同步</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.6 时间类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">time.rtc</td>
+<td style="padding:6px 10px">RTC 实时时钟</td>
+<td style="padding:6px 10px">/dev/rtc0</td>
+<td style="padding:6px 10px">rtc</td>
+<td style="padding:6px 10px">系统时间 / 唤醒闹钟</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">time.pps</td>
+<td style="padding:6px 10px">PPS 脉冲</td>
+<td style="padding:6px 10px">/dev/pps0</td>
+<td style="padding:6px 10px">pps-gpio</td>
+<td style="padding:6px 10px">精确秒脉冲 / 时钟同步</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">time.gps</td>
+<td style="padding:6px 10px">GNSS 接收器</td>
+<td style="padding:6px 10px">/dev/ttyGPS / /dev/gnss0</td>
+<td style="padding:6px 10px">gnss + tty</td>
+<td style="padding:6px 10px">定位 / UTC 时间</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.7 安全类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">security.hsm</td>
+<td style="padding:6px 10px">硬件安全模块</td>
+<td style="padding:6px 10px">/dev/spidev* / /dev/i2c-*</td>
+<td style="padding:6px 10px">crypto + pkcs11</td>
+<td style="padding:6px 10px">密钥管理 / 签名 / TLS</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">security.otp</td>
+<td style="padding:6px 10px">一次性可编程</td>
+<td style="padding:6px 10px">SoC eFuse</td>
+<td style="padding:6px 10px">nvmem</td>
+<td style="padding:6px 10px">芯片唯一标识 / 存储密钥</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">security.seboot</td>
+<td style="padding:6px 10px">安全启动</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">Trusted Firmware</td>
+<td style="padding:6px 10px">逐级验签启动链</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.8 串行通信类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">serial.rs485</td>
+<td style="padding:6px 10px">RS485 总线</td>
+<td style="padding:6px 10px">/dev/ttyRS*</td>
+<td style="padding:6px 10px">tty + RS485 flags</td>
+<td style="padding:6px 10px">Modbus / 工业控制</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">serial.rs232</td>
+<td style="padding:6px 10px">RS232</td>
+<td style="padding:6px 10px">/dev/ttyS*</td>
+<td style="padding:6px 10px">tty</td>
+<td style="padding:6px 10px">调试 / 旧设备通信</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">serial.spi</td>
+<td style="padding:6px 10px">SPI</td>
+<td style="padding:6px 10px">/dev/spidev*</td>
+<td style="padding:6px 10px">spidev</td>
+<td style="padding:6px 10px">外设传感器 / ADC</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.9 电源管理类</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">power.pmic</td>
+<td style="padding:6px 10px">PMIC 电源管理</td>
+<td style="padding:6px 10px">/sys/class/regulator/</td>
+<td style="padding:6px 10px">regulator</td>
+<td style="padding:6px 10px">电压 / 电流控制</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">power.wakeup</td>
+<td style="padding:6px 10px">唤醒源管理</td>
+<td style="padding:6px 10px">/sys/kernel/wakeup</td>
+<td style="padding:6px 10px">wakeup</td>
+<td style="padding:6px 10px">深睡眠 / 唤醒</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">power.battery</td>
+<td style="padding:6px 10px">电池管理</td>
+<td style="padding:6px 10px">/sys/class/power_supply/</td>
+<td style="padding:6px 10px">power_supply</td>
+<td style="padding:6px 10px">电量 / 充放电</td>
+</tr>
+</table>
+
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">4.10 IO 扩展</h3>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">能力 ID</th>
+<th style="padding:6px 10px">名称</th>
+<th style="padding:6px 10px">设备节点</th>
+<th style="padding:6px 10px">内核子系统</th>
+<th style="padding:6px 10px">典型用途</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">gpio</td>
+<td style="padding:6px 10px">GPIO</td>
+<td style="padding:6px 10px">/sys/class/gpio/ / libgpiod</td>
+<td style="padding:6px 10px">gpio / gpiod</td>
+<td style="padding:6px 10px">数字 IO / 中断</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">adc</td>
+<td style="padding:6px 10px">ADC</td>
+<td style="padding:6px 10px">/sys/bus/iio/</td>
+<td style="padding:6px 10px">IIO</td>
+<td style="padding:6px 10px">模拟量采集</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">pwm</td>
+<td style="padding:6px 10px">PWM</td>
+<td style="padding:6px 10px">/sys/class/pwm/</td>
+<td style="padding:6px 10px">pwm</td>
+<td style="padding:6px 10px">背光 / 电机控制</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">5. 能力注册与查询接口（设计）</h2>
+
+<p style="margin:4px 0">能力管理系统对外提供以下接口（后续将展开实现细节）：</p>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">reg_capability(id, provider, deps, ops)   — 注册一个能力单元
+get_capability(id) → capability_info     — 查询能力详情
+get_dep_chain(id) → [capability_id]      — 获取能力的完整依赖链
+check_cap_ready(id) → bool               — 检查能力是否就绪
+cap_status(id) → {ready, blocked, error} — 获取能力状态
+list_capabilities() → [capability_id]     — 列出所有已注册能力</pre>
+
+<h3 style="font-size:13pt;color:#2F5496;margin:14px 0 6px">能力状态机</h3>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">                 ┌──────────────────┐
+                 │  Uninitialized   │
+                 └────────┬─────────┘
+                          │ 注册
+                          ▼
+                 ┌──────────────────┐
+          ┌─────│   Registered     │
+          │     └────────┬─────────┘
+          │              │ 依赖全部就绪
+          │              ▼
+          │     ┌──────────────────┐
+          │     │     Ready        │ ←── 正常使用
+          │     └────────┬─────────┘
+          │              │ 运行时错误
+          │              ▼
+          │     ┌──────────────────┐
+          │     │     Error        │
+          │     └──────────────────┘
+          │
+          │     ┌──────────────────┐
+          └─────│    Blocked       │ ←── 依赖缺失 / 硬件未初始化
+                └──────────────────┘</pre>
+
+<pre style="background:#f5f5f5;border:1px solid #ddd;padding:12px;font-family:Consolas,monospace;font-size:9pt;white-space:pre-wrap">stateDiagram-v2
+    [*] --&gt; Uninitialized
+    Uninitialized --&gt; Registered: 注册
+    Registered --&gt; Ready: 依赖全部就绪
+    Registered --&gt; Blocked: 依赖缺失 / 硬件未初始化
+    Ready --&gt; Error: 运行时错误
+    Error --&gt; Registered: 恢复
+    Blocked --&gt; Registered: 依赖就绪
+    Ready --&gt; [*]: 卸载
+    Error --&gt; [*]: 卸载
+    Blocked --&gt; [*]: 卸载</pre>
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">6. 硬件资源清单（模板）</h2>
+
+<p style="margin:4px 0">供 BSP / 硬件团队填写：</p>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">硬件</th>
+<th style="padding:6px 10px">芯片型号</th>
+<th style="padding:6px 10px">挂载总线</th>
+<th style="padding:6px 10px">中断号</th>
+<th style="padding:6px 10px">DMA</th>
+<th style="padding:6px 10px">设备树状态</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">CPU</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">status = okay</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">DDR</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">内存节点</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">eMMC</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">mmc0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&mmc0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">NAND</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">nfc</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&nand</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">MCU</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">SPI (SoC↔MCU)</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">MCU 固件加载</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">CANFD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">MCU CAN Controller</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">通过 MCU 转发</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">RS485</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">uart0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&uart0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">SPI</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">spi0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&spi0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Ethernet</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">eth0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&mac0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">Ethernet Switch</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">mdio0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">由 DSA 驱动注册</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">USB</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">usb0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">&usb0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">WiFi</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">sdio0/usb</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">4G</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">usb1/pcie</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">TBD</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">GPS</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">uart1</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">&uart1</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">HSM</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">spi1</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">&spi1</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">PMIC</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">i2c0</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">&i2c0</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">RTC</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">i2c0/spi</td>
+<td style="padding:6px 10px">TBD</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">&rtc</td>
+</tr>
+</table>
+
+
+<hr>
+
+<h2 style="font-size:15pt;color:#2F5496;margin:14px 0 6px">7. 修订记录</h2>
+
+<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;width:100%;margin:8px 0">
+<tr>
+<th style="padding:6px 10px">版本</th>
+<th style="padding:6px 10px">日期</th>
+<th style="padding:6px 10px">修改内容</th>
+<th style="padding:6px 10px">修改人</th>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.1</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">初版硬件能力框架结构</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+<tr>
+<td style="padding:6px 10px">v0.2</td>
+<td style="padding:6px 10px">—</td>
+<td style="padding:6px 10px">修正为 SoC+MCU 双处理器模型；CANFD 更正为 MCU CAN→SPI→SoC 转发路径；新增 MCU 桥接能力单元</td>
+<td style="padding:6px 10px">—</td>
+</tr>
+</table>
+
+
+</body></html>
