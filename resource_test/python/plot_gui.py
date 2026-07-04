@@ -8,32 +8,36 @@ tkinter Canvas 柱状图, 签名校验, 窗口直接显示。
   python3 plot_gui.py <profile_dir>
   python3 plot_gui.py /tmp/test_signed_64325_20260704_185631
 """
-import sys, os, csv, hmac, hashlib
+import sys, os, csv, subprocess
 import tkinter as tk
 from tkinter import ttk
 
-# ── 签名密钥 (与 sign.c 一致) ──────────────────────
-SIGN_KEY = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# ── csv_verify 二进制路径 ─────────────────────────
+CSV_VERIFY_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'src', 'build', 'csv_verify')
 
 def verify_csv_signature(path):
-    """返回 (valid, msg): True=有效, False=无效, None=无签名"""
+    """调用 C 二进制 csv_verify -q 验签。
+    返回 (valid, msg):
+      True        = 签名有效
+      False       = 签名无效 (数据被篡改)
+      None        = CSV 无签名行
+      'no_binary' = csv_verify 二进制不存在, 无法验签
+    """
     try:
-        with open(path, 'rb') as f:
-            content = f.read()
-        marker = b"\n# SIG:HMAC-SHA256:"
-        idx = content.find(marker)
-        if idx == -1:
+        r = subprocess.run([CSV_VERIFY_BIN, '-q', path],
+                           capture_output=True, timeout=5)
+        # 退出码: 0=有效, 1=无效, 2=无签名, 3=IO错误
+        if r.returncode == 0:
+            return True, None
+        elif r.returncode == 2:
             return None, None
-        sig_start = idx + len(marker)
-        sig_end = content.find(b'\n', sig_start)
-        if sig_end == -1:
-            sig_end = len(content)
-        expected = content[sig_start:sig_end].decode().strip()
-        signable = content[:idx + 1]
-        computed = hmac.new(SIGN_KEY, signable, hashlib.sha256).hexdigest()
-        return (computed == expected, None if computed == expected else "签名不匹配")
+        else:
+            return False, r.stderr.decode().strip() or "签名验证失败"
+    except FileNotFoundError:
+        return 'no_binary', None
     except Exception as e:
-        return False, str(e)
+        return None, str(e)
 
 def read_csv(path):
     """读取单列 CSV, 返回 [(x, y), ...]; 跳过 # 行"""
@@ -122,6 +126,11 @@ class BarChart(tk.Canvas):
         elif self.sig_ok is None:
             self.create_rectangle(0, 0, w, 20, fill='#332810', outline='')
             self.create_text(w//2, 12, text='⚠ 无签名 — 无法核实真伪',
+                             fill='#d2991d', font=('', 9, 'bold'))
+            ty = 30
+        elif self.sig_ok == 'no_binary':
+            self.create_rectangle(0, 0, w, 20, fill='#332810', outline='')
+            self.create_text(w//2, 12, text='⚠ 无法验签 — 验签工具未找到',
                              fill='#d2991d', font=('', 9, 'bold'))
             ty = 30
 

@@ -11,7 +11,7 @@ resource_monitor/
 ├── README.md                    ← 本文件
 │
 ├── resource_test/               ← 资源监测工具包 (C + Shell + Python)
-│   ├── src/app_profile/         # C 版资源画像采集器 (并发, 7 模块)
+│   ├── src/app_profile/         # C 版资源画像采集器 (并发, 7 模块 + 签名+csv_verify)
 │   ├── src/stability_monitor/   # C 版 24h 稳定性监控
 │   ├── src/system_stress/       # C 版系统压力负载生成器
 │   ├── scripts/                 # Shell 版测试脚本 (4 个)
@@ -70,12 +70,14 @@ PID=$(cat /tmp/dummy_app.pid)
 ### 3. 可视化 (二选一)
 
 ```bash
+# GUI 版: tkinter 窗口 (需 apt install python3-tk)
+python3 python/plot_gui.py /tmp/my_test_${PID}_*
+
 # HTML 版: 浏览器查看
 python3 python/plot_profile.py /tmp/my_test_${PID}_*
-
-# GUI 版: tkinter 窗口直接显示 (需 apt install python3-tk)
-python3 python/plot_gui.py /tmp/my_test_${PID}_*
 ```
+
+> 验签通过调用 C 二进制 `csv_verify` 完成，密钥仅存在于编译后的二进制中。Python 源码不暴露密钥。
 
 ### 4. 运行单元测试
 
@@ -133,10 +135,10 @@ thread_fd_sampler.c     100% (30/30)
 
 ## 依赖
 
-| 组件 | 依赖 |
-|------|------|
-| C 工具 | Linux /proc 文件系统, pthread, gcc/clang |
-| Shell 脚本 | bash, awk, smem (可选) |
-| Python 可视化 | **零依赖** — 纯 `csv` + 内联 SVG |
-| GTest 测试 | GTest 预编译库 (已包含在 `gtest/install/`) |
-| 交叉编译 | `arm-linux-gnueabihf-gcc` 工具链 |
+| 组件　　　　　| 依赖　　　　　　　　　　　　　　　　　　　 |
+| ---------------| --------------------------------------------|
+| C 工具　　　　| Linux /proc 文件系统, pthread, gcc/clang　 |
+| Shell 脚本　　| bash, awk, smem (可选)　　　　　　　　　　 |
+| Python 可视化 | **零依赖** — 纯 `csv` + 内联 SVG　　　　　 |
+| GTest 测试　　| GTest 预编译库 (已包含在 `gtest/install/`) |
+| 交叉编译　　　| `arm-linux-gnueabihf-gcc` 工具链　　　　　 |

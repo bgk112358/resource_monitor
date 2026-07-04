@@ -36,17 +36,42 @@ static int is_csv(const char *name) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) {
-        fprintf(stderr, "用法: %s <file_or_dir>\n", argv[0]);
-        fprintf(stderr, "示例: %s /tmp/test/cpu.csv\n", argv[0]);
-        fprintf(stderr, "      %s /tmp/test/\n", argv[0]);
-        return 1;
+    int quiet = 0;
+    const char *target = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-q") == 0) {
+            quiet = 1;
+        } else {
+            target = argv[i];
+        }
+    }
+
+    if (!target) {
+        fprintf(stderr, "用法: %s [-q] <file_or_dir>\n", argv[0]);
+        fprintf(stderr, "  -q  安静模式, 只返回退出码:\n");
+        fprintf(stderr, "       0=签名有效  1=签名无效  2=无签名  3=IO错误\n");
+        return 3;
     }
 
     struct stat st;
-    if (stat(argv[1], &st) != 0) {
-        fprintf(stderr, "❌ 路径不存在: %s\n", argv[1]);
-        return 1;
+    if (stat(target, &st) != 0) {
+        if (!quiet) fprintf(stderr, "❌ 路径不存在: %s\n", target);
+        return 3;
+    }
+
+    /* 安静模式: 验证单个文件, 返回退出码 */
+    if (quiet && !S_ISDIR(st.st_mode)) {
+        int r = verify_file(target);
+        /* 映射 verify_file 返回值到退出码:
+           0 (valid)  → 0
+           -2 (无签名) → 2
+           -3 (无效)  → 1
+           -1 (IO错)  → 3 */
+        if (r == 0)  return 0;
+        if (r == -2) return 2;
+        if (r == -3) return 1;
+        return 3;
     }
 
     int fail_count = 0;

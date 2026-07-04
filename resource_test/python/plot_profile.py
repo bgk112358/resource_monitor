@@ -8,43 +8,26 @@ plot_profile.py — 读取 app_profile CSV 输出, 生成 4 合 1 折线图 HTML
 
 输出: <profile_dir>/chart.html — 用浏览器打开即可查看
 """
-import sys, os, csv, hmac, hashlib
+import sys, os, csv, subprocess
 
-# ── HMAC 签名验证 ──────────────────────────────────
-# 与 sign.c 中的 SIGN_KEY 必须一致
-SIGN_KEY = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+# ── csv_verify 二进制路径 ─────────────────────────
+CSV_VERIFY_BIN = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               '..', 'src', 'build', 'csv_verify')
 
 def verify_csv_signature(path):
-    """验证 CSV 文件的 HMAC 签名。返回 (valid: bool, message: str)"""
+    """调用 C 二进制 csv_verify -q 验签。
+    返回: True=有效, False=无效, None=CSV无签名, 'no_binary'=工具未找到
+    """
     try:
-        with open(path, 'rb') as f:
-            content = f.read()
-
-        # 查找签名行
-        sig_marker = b"\n# SIG:HMAC-SHA256:"
-        idx = content.find(sig_marker)
-        if idx == -1:
-            return None, None   # 无签名, 不提示
-
-        # 提取签名值 (64 hex chars)
-        sig_start = idx + len(sig_marker)
-        sig_end = content.find(b'\n', sig_start)
-        if sig_end == -1:
-            sig_end = len(content)
-        expected_sig = content[sig_start:sig_end].decode().strip()
-
-        # 被签名的正文 = 签名行之前的内容 (包括签名行前那个 \n)
-        signable = content[:idx + 1]
-
-        # 重算 HMAC
-        computed = hmac.new(SIGN_KEY, signable, hashlib.sha256).hexdigest()
-
-        if computed == expected_sig:
-            return True, None
-        else:
-            return False, "签名不匹配"
+        r = subprocess.run([CSV_VERIFY_BIN, '-q', path],
+                           capture_output=True, timeout=5)
+        if r.returncode == 0:   return True, None
+        elif r.returncode == 2: return None, None
+        else:                   return False, r.stderr.decode().strip() or "签名验证失败"
+    except FileNotFoundError:
+        return 'no_binary', None
     except Exception as e:
-        return False, str(e)
+        return None, str(e)
 
 def read_csv(path, skip_header=True):
     """读取 CSV, 返回 [(x, y), ...]; 跳过 # 开头的签名行"""
@@ -147,13 +130,19 @@ def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None, ymax_override
     if sig_ok is False:
         warning = f'''
     <rect x="0" y="0" width="{width}" height="22" fill="#f8514933" rx="0"/>
-    <text x="{width//2}" y="15" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">⚠ 签名验证失败 — 数据可能被篡改</text>
+    <text x="{width//2}" y="15" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">⚠ 签名无效 — 数据可能被篡改</text>
     '''
         title_y = 36
     elif sig_ok is None:
         warning = f'''
     <rect x="0" y="0" width="{width}" height="22" fill="#d2991d33" rx="0"/>
-    <text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无签名数据 — 无法核实数据真伪</text>
+    <text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无签名 — 无法核实真伪</text>
+    '''
+        title_y = 36
+    elif sig_ok == 'no_binary':
+        warning = f'''
+    <rect x="0" y="0" width="{width}" height="22" fill="#d2991d33" rx="0"/>
+    <text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无法验签 — 验签工具未找到</text>
     '''
         title_y = 36
 
