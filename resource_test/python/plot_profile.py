@@ -94,7 +94,7 @@ def svg_line_chart_multi(series_list, width, height, ylabel, labels=None):
     xlbl = ''.join(f'<text x="{ml+i*pw/max(1,n-1):.1f}" y="{height-mb+16}" text-anchor="middle" fill="#888" font-size="9">{i+1}</text>' for i in range(0, n, step))
 
     # Legend
-    legend = ''.join(f'<line x1="{width-mr-28}" y1="{mt+4+si*14+5}" x2="{width-mr-14}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-10}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
+    legend = ''.join(f'<line x1="{width-mr-68}" y1="{mt+4+si*14+5}" x2="{width-mr-54}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-50}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
 
     return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="14" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend}</svg>'
 
@@ -168,17 +168,23 @@ def build_html(profile_dir):
     core_chart = ''
     if core_data and len(core_data) > 0:
         n = len(core_data)
-        label = f'Per-Core CPU ({n} cores)' if n > 1 else 'Per-Core CPU (1 core)'
+        label = 'Per-Core CPU (%)'
+        if core_data:
+            all_max = max(max(s) for s in core_data)
+            label += f' — max: {all_max:.1f}'
         core_labels = [f'Core {i}' for i in range(n)]
         core_chart = svg_line_chart_multi(core_data, w, h, label, labels=core_labels)
 
+    def label_with_max(data, base):
+        return f'{base} — max: {max(data):.1f}' if data else base
+
     charts = [
-        ('CPU (%)', svg_bar_chart(cpu_raw,w,h,'#58a6ff','CPU Usage (%)',sig_ok=sf('cpu'))),
-        ('Memory RSS (KB)', svg_bar_chart(mem_raw,w,h,'#3fb950','Memory RSS (KB)',sig_ok=sf('mem'))),
-        ('Threads', svg_bar_chart(tr,w,h,'#f0883e','Thread Count',sig_ok=sf('threads_fd'))),
-        ('File Descriptors', svg_bar_chart(fd,w,h,'#d2a8ff','Open File Descriptors',sig_ok=sf('threads_fd'))),
-        ('IO Read (KB/s)', svg_bar_chart(ior,w,h,'#f85149','IO Read Throughput (KB/s)',sig_ok=sf('io'))),
-        ('IO Write (KB/s)', svg_bar_chart(iow,w,h,'#f59e0b','IO Write Throughput (KB/s)',sig_ok=sf('io'))),
+        ('CPU (%)', svg_bar_chart(cpu_raw,w,h,'#58a6ff',label_with_max(cpu_raw,'CPU Usage (%)'),sig_ok=sf('cpu'))),
+        ('Memory RSS (KB)', svg_bar_chart(mem_raw,w,h,'#3fb950',label_with_max(mem_raw,'Memory RSS (KB)'),sig_ok=sf('mem'))),
+        ('Threads', svg_bar_chart(tr,w,h,'#f0883e',label_with_max(tr,'Thread Count'),sig_ok=sf('threads_fd'))),
+        ('File Descriptors', svg_bar_chart(fd,w,h,'#d2a8ff',label_with_max(fd,'Open File Descriptors'),sig_ok=sf('threads_fd'))),
+        ('IO Read (KB/s)', svg_bar_chart(ior,w,h,'#f85149',label_with_max(ior,'IO Read Throughput (KB/s)'),sig_ok=sf('io'))),
+        ('IO Write (KB/s)', svg_bar_chart(iow,w,h,'#f59e0b',label_with_max(iow,'IO Write Throughput (KB/s)'),sig_ok=sf('io'))),
     ]
     panels = ''.join(f'<div class="chart-panel">{s}</div>' for _, s in charts)
     if core_chart:

@@ -85,17 +85,17 @@ class LineChart(tk.Canvas):
 
     def __init__(self, parent, title, series_list, labels=None, **kw):
         """series_list: [[y1,y2,...], [y1,y2,...], ...] 每个子列表是一个核心"""
-        w = kw.pop('width', 460); h = kw.pop('height', 220)
-        super().__init__(parent, width=w, height=h, bg='#161b22',
+        super().__init__(parent, bg='#161b22',
                          highlightthickness=1, highlightbackground='#30363d', **kw)
         self.title = title
         self.series = series_list
         self.labels = labels if labels else [f'core{i}' for i in range(len(series_list))]
-        self._draw()
+        self.bind('<Configure>', lambda e: self._draw())
 
-    def _draw(self):
+    def _draw(self, event=None):
         self.delete('all')
-        w = int(self['width']); h = int(self['height'])
+        w = self.winfo_width(); h = self.winfo_height()
+        if w < 10 or h < 10: return
         ml, mr, mt, mb = 52, 20, 26, 32
         pw = w - ml - mr; ph = h - mt - mb
         if not self.series or not self.series[0]:
@@ -145,7 +145,7 @@ class LineChart(tk.Canvas):
             self.create_text(bx, h-mb+12, text=str(i+1), fill='#888', font=('',8), anchor='n')
 
         # Legend
-        lx = w - mr - 10; ly = mt + 4
+        lx = w - mr - 50; ly = mt + 4
         for si, label in enumerate(self.labels):
             color = self.PALETTE[si % len(self.PALETTE)]
             self.create_line(lx-18, ly+5, lx-4, ly+5, fill=color, width=2)
@@ -160,19 +160,18 @@ class BarChart(tk.Canvas):
     }
 
     def __init__(self, parent, title, data, color_key, sig_ok, **kw):
-        w = kw.pop('width', 460)
-        h = kw.pop('height', 220)
-        super().__init__(parent, width=w, height=h, bg='#161b22',
+        super().__init__(parent, bg='#161b22',
                          highlightthickness=1, highlightbackground='#30363d', **kw)
         self.title = title
         self.data = data
         self.color = self.COLORS.get(color_key, '#888')
         self.sig_ok = sig_ok
-        self._draw()
+        self.bind('<Configure>', lambda e: self._draw())
 
-    def _draw(self):
+    def _draw(self, event=None):
         self.delete('all')
-        w = int(self['width']); h = int(self['height'])
+        w = self.winfo_width(); h = self.winfo_height()
+        if w < 10 or h < 10: return
         ml, mr, mb = 48, 16, 32
 
         if not self.data:
@@ -284,6 +283,9 @@ class App(tk.Tk):
             r = verify_csv_signature(csv_path(fname))
             return r[0] if r else None
 
+        def max_str(data):
+            return f' — max: {max(data):.1f}' if data else ''
+
         charts = [
             ('CPU Usage (%)',         cpu_data,  'cpu',  sig('cpu.csv')),
             ('Memory RSS (KB)',       mem_data,  'mem',  sig('mem.csv')),
@@ -292,8 +294,9 @@ class App(tk.Tk):
             ('IO Read (KB/s)',        ior_data,  'ior',  sig('io.csv')),
             ('IO Write (KB/s)',       iow_data,  'iow',  sig('io.csv')),
         ]
+        charts = [(t + max_str(d), d, ck, so) for t, d, ck, so in charts]
         for i, (title, data, ck, sig_ok) in enumerate(charts):
-            chart = BarChart(grid, title, data, ck, sig_ok, width=420, height=200)
+            chart = BarChart(grid, title, data, ck, sig_ok)
             chart.grid(row=i//2, column=i%2, padx=6, pady=6, sticky='nsew')
             grid.grid_columnconfigure(i%2, weight=1)
             grid.grid_rowconfigure(i//2, weight=1)
@@ -302,8 +305,8 @@ class App(tk.Tk):
         if core_data and len(core_data) > 0:
             n = len(core_data)
             labels = [f'Core {i}' for i in range(n)]
-            chart = LineChart(grid, f'Per-Core CPU ({n} cores)', core_data, labels=labels,
-                              width=420, height=200)
+            all_max = max(max(s) for s in core_data)
+            chart = LineChart(grid, f'Per-Core CPU (%) — max: {all_max:.1f}', core_data, labels=labels)
             chart.grid(row=3, column=0, padx=6, pady=6, sticky='nsew')
             grid.grid_rowconfigure(3, weight=1)
 
