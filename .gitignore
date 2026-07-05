@@ -12,6 +12,7 @@ _deps
 CMakeUserPresets.json
 plot_gui.py.bak
 plot_profile.py.bak
+__pycache__
 build
 */build
 

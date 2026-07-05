@@ -194,14 +194,21 @@ int main(int argc, char *argv[]) {
 
     /* ── 签名为防伪 ──────────────────────────── */
     char csv_path[MAX_PATH];
+    /* ── 追加版本号 (签名之前, 版本号受 HMAC 保护) ── */
+    for (int i = 0; i < 6; i++) {
+        const char *names[] = {"cpu.csv","mem.csv","threads_fd.csv","io.csv","core.csv","net.csv"};
+        snprintf(csv_path, sizeof(csv_path), "%s/%s", outdir, names[i]);
+        FILE *vf = fopen(csv_path, "a");
+        if (vf) { fprintf(vf, "# VERSION:%s\n", APP_VERSION); fclose(vf); }
+    }
+
+    /* ── 签名 (覆盖数据 + 版本号) ── */
     snprintf(csv_path, sizeof(csv_path), "%s/cpu.csv", outdir);        sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/mem.csv", outdir);        sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/threads_fd.csv", outdir); sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/io.csv", outdir);         sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/core.csv", outdir);       sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/net.csv", outdir);        sign_file(csv_path);
-
-    /* ── 合并快照 ──────────────────────────── */
     ResourceSnapshot snap;
     snap.cpu_avg     = snap_cpu.cpu_avg;
     snap.cpu_peak    = snap_cpu.cpu_peak;

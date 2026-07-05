@@ -23,6 +23,40 @@ def _get_csv_verify():
                             '..', 'src', 'build', 'csv_verify')
 CSV_VERIFY_BIN = _get_csv_verify()
 
+EXPECTED_VERSION = "26.0.1"
+
+def check_csv_version(profile_dir):
+    """读取所有 CSV 的 # VERSION: 行, 逐文件比对期望版本。返回 None=全部一致, str=警告"""
+    try:
+        mismatched = []
+        no_ver = []
+        for fn in sorted(os.listdir(profile_dir)):
+            if not fn.endswith('.csv'):
+                continue
+            path = os.path.join(profile_dir, fn)
+            with open(path) as f:
+                for line in f:
+                    if line.startswith('# VERSION:'):
+                        ver = line.split(':')[1].strip()
+                        if ver != EXPECTED_VERSION:
+                            mismatched.append((fn, ver))
+                        break
+                else:
+                    no_ver.append(fn)
+        if mismatched:
+            detail = ', '.join(f'{f}(v{ver})' for f, ver in mismatched[:3])
+            if len(mismatched) > 3:
+                detail += f' ... 等{len(mismatched)}个文件'
+            return f"版本不匹配 ({detail} — 绘图 v{EXPECTED_VERSION})"
+        if no_ver:
+            detail = ', '.join(no_ver[:3])
+            if len(no_ver) > 3:
+                detail += f' ... 等{len(no_ver)}个文件'
+            return f"缺少版本号 (旧格式: {detail})"
+    except Exception:
+        pass
+    return None
+
 def verify_csv_signature(path):
     try:
         r = subprocess.run([CSV_VERIFY_BIN, '-q', path], capture_output=True, timeout=5)
@@ -63,7 +97,7 @@ def read_csv_multi(path):
 PALETTE = ['#58a6ff','#3fb950','#f0883e','#d2a8ff','#f85149','#f59e0b',
            '#79c0ff','#56d364','#e29b44','#bc8cff','#ff7b72','#f2cc60']
 
-def svg_line_chart_multi(series_list, width, height, ylabel, labels=None):
+def svg_line_chart_multi(series_list, width, height, ylabel, labels=None, sig_ok=None):
     """多系列折线图 SVG — 每个核心一条线"""
     if not series_list or not series_list[0]:
         return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="{height//2}" text-anchor="middle" fill="#888">No data</text></svg>'
@@ -103,7 +137,15 @@ def svg_line_chart_multi(series_list, width, height, ylabel, labels=None):
     legend_bg = f'<rect x="{width-mr-62}" y="{mt-4}" width="62" height="{14*n_lbl+12}" fill="#161b22" rx="3"/>'
     legend = ''.join(f'<line x1="{width-mr-40}" y1="{mt+4+si*14+5}" x2="{width-mr-26}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-22}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
 
-    return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="14" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend_bg}{legend}</svg>'
+    sw = ''
+    if sig_ok is False:
+        sw = f'<rect x="0" y="0" width="{width}" height="22" fill="#f8514933" rx="0"/><text x="{width//2}" y="15" text-anchor="middle" fill="#f85149" font-size="11" font-weight="bold">⚠ 签名无效 — 数据可能被篡改</text>'
+    elif sig_ok is None:
+        sw = f'<rect x="0" y="0" width="{width}" height="22" fill="#d2991d33" rx="0"/><text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无签名 — 无法核实真伪</text>'
+    elif sig_ok == 'no_binary':
+        sw = f'<rect x="0" y="0" width="{width}" height="22" fill="#d2991d33" rx="0"/><text x="{width//2}" y="15" text-anchor="middle" fill="#d2991d" font-size="11" font-weight="bold">⚠ 无法验签 — 验签工具未找到</text>'
+    title_y = 36 if sw else 14
+    return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/>{sw}<text x="{width//2}" y="{title_y}" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend_bg}{legend}</svg>'
 
 
 def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None):
@@ -140,7 +182,7 @@ def build_html(profile_dir):
     if os.path.exists(rpt):
         for line in open(rpt):
             if "进程名称:" in line: proc_name = line.split(":")[-1].strip(); break
-    csv_files = {'cpu':'cpu.csv','mem':'mem.csv','threads_fd':'threads_fd.csv','io':'io.csv'}
+    csv_files = {'cpu':'cpu.csv','mem':'mem.csv','threads_fd':'threads_fd.csv','io':'io.csv','core':'core.csv','net':'net.csv'}
     sig = {}
     for k, fn in csv_files.items():
         fp = os.path.join(profile_dir, fn)
@@ -172,7 +214,7 @@ def build_html(profile_dir):
             all_max = max(max(s) for s in core_data)
             label += f' — max: {all_max:.1f}'
         core_labels = [f'Core {i}' for i in range(n)]
-        core_chart = svg_line_chart_multi(core_data, w, h, label, labels=core_labels)
+        core_chart = svg_line_chart_multi(core_data, w, h, label, labels=core_labels, sig_ok=sf('core'))
 
     def label_with_max(data, base):
         return f'{base} — max: {max(data):.1f}' if data else base
@@ -189,14 +231,14 @@ def build_html(profile_dir):
         mx = lambda d: f'{max(d):.0f}' if d else '0'
         mem_label = f'Memory (KB) — max RSS:{mx(mem_rss)} PSS:{mx(mem_pss)} USS:{mx(mem_uss)}'
         mem_chart = svg_line_chart_multi([mem_rss, mem_pss, mem_uss], w, h,
-                                          mem_label, labels=['RSS','PSS','USS'])
+                                          mem_label, labels=['RSS','PSS','USS'], sig_ok=sf('mem'))
         panels += f'<div class="chart-panel">{mem_chart}</div>'
 
     # IO line chart (Read + Write)
     if ior and iow:
         mx = lambda d: f'{max(d):.0f}' if d else '0'
         io_label = f'IO Throughput (KB/s) — max R:{mx(ior)} W:{mx(iow)}'
-        io_chart = svg_line_chart_multi([ior, iow], w, h, io_label, labels=['Read','Write'])
+        io_chart = svg_line_chart_multi([ior, iow], w, h, io_label, labels=['Read','Write'], sig_ok=sf('io'))
         panels += f'<div class="chart-panel">{io_chart}</div>'
 
     # Network line chart
@@ -213,7 +255,7 @@ def build_html(profile_dir):
                 all_max = max(max(s) for s in net_series) if net_series else 0
                 net_chart = svg_line_chart_multi(net_series, w, h,
                                                   f'Network (KB/s) — max: {all_max:.0f}',
-                                                  labels=net_labels)
+                                                  labels=net_labels, sig_ok=sf('net'))
                 panels += f'<div class="chart-panel">{net_chart}</div>'
 
     if core_chart:
@@ -226,5 +268,9 @@ if __name__ == '__main__':
     d = sys.argv[1]
     if not os.path.isdir(d): print(f"❌ 目录不存在: {d}"); sys.exit(1)
     out = os.path.join(d, "chart.html")
-    open(out, 'w', encoding='utf-8').write(build_html(d))
+    ver_warn = check_csv_version(d)
+    html = build_html(d)
+    if ver_warn:
+        html = html.replace('<h1>', f'<p style="color:#f59e0b;font-size:12px;margin-bottom:8px">⚠ {ver_warn}</p>\n<h1>')
+    open(out, 'w', encoding='utf-8').write(html)
     print(f"✅ 图表已生成: {out}")

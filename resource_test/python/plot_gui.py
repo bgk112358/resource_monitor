@@ -31,6 +31,40 @@ def _get_csv_verify():
 
 CSV_VERIFY_BIN = _get_csv_verify()
 
+EXPECTED_VERSION = "26.0.1"
+
+def check_csv_version(profile_dir):
+    """读取所有 CSV 的 # VERSION: 行, 逐文件比对期望版本。返回 None=全部一致, str=警告"""
+    try:
+        mismatched = []
+        no_ver = []
+        for fn in sorted(os.listdir(profile_dir)):
+            if not fn.endswith('.csv'):
+                continue
+            path = os.path.join(profile_dir, fn)
+            with open(path) as f:
+                for line in f:
+                    if line.startswith('# VERSION:'):
+                        ver = line.split(':')[1].strip()
+                        if ver != EXPECTED_VERSION:
+                            mismatched.append((fn, ver))
+                        break
+                else:
+                    no_ver.append(fn)
+        if mismatched:
+            detail = ', '.join(f'{f}(v{ver})' for f, ver in mismatched[:3])
+            if len(mismatched) > 3:
+                detail += f' ... 等{len(mismatched)}个文件'
+            return f"版本不匹配 ({detail} — 绘图 v{EXPECTED_VERSION})"
+        if no_ver:
+            detail = ', '.join(no_ver[:3])
+            if len(no_ver) > 3:
+                detail += f' ... 等{len(no_ver)}个文件'
+            return f"缺少版本号 (旧格式: {detail})"
+    except Exception:
+        pass
+    return None
+
 
 def verify_csv_signature(path):
     try:
@@ -86,13 +120,14 @@ class LineChart(tk.Canvas):
     PALETTE = ['#58a6ff','#3fb950','#f0883e','#d2a8ff','#f85149','#f59e0b',
                '#79c0ff','#56d364','#e29b44','#bc8cff','#ff7b72','#f2cc60']
 
-    def __init__(self, parent, title, series_list, labels=None, **kw):
+    def __init__(self, parent, title, series_list, labels=None, sig_ok=None, **kw):
         """series_list: [[y1,y2,...], [y1,y2,...], ...] 每个子列表是一个核心"""
         super().__init__(parent, bg='#161b22',
                          highlightthickness=1, highlightbackground='#30363d', **kw)
         self.title = title
         self.series = series_list
         self.labels = labels if labels else [f'core{i}' for i in range(len(series_list))]
+        self.sig_ok = sig_ok
         self.bind('<Configure>', lambda e: self._draw())
 
     def _draw(self, event=None):
@@ -115,8 +150,26 @@ class LineChart(tk.Canvas):
 
         def ty(y): return h - mb - (y / ymax) * ph
 
+        # 签名状态横幅
+        title_y = 12
+        if self.sig_ok is False:
+            self.create_rectangle(0, 0, w, 20, fill='#3d1115', outline='')
+            self.create_text(w//2, 12, text='⚠ 签名无效 — 数据可能被篡改',
+                             fill='#f85149', font=('', 9, 'bold'))
+            title_y = 30
+        elif self.sig_ok is None:
+            self.create_rectangle(0, 0, w, 20, fill='#332810', outline='')
+            self.create_text(w//2, 12, text='⚠ 无签名 — 无法核实真伪',
+                             fill='#d2991d', font=('', 9, 'bold'))
+            title_y = 30
+        elif self.sig_ok == 'no_binary':
+            self.create_rectangle(0, 0, w, 20, fill='#332810', outline='')
+            self.create_text(w//2, 12, text='⚠ 无法验签 — 验签工具未找到',
+                             fill='#d2991d', font=('', 9, 'bold'))
+            title_y = 30
+
         # 标题
-        self.create_text(w//2, 12, text=self.title, fill='#ccc', font=('',11,'bold'))
+        self.create_text(w//2, title_y, text=self.title, fill='#ccc', font=('',11,'bold'))
 
         # 网格 + Y 轴
         for i in range(5):
@@ -257,6 +310,9 @@ class App(tk.Tk):
         header.pack(fill='x', padx=16, pady=(12, 4))
         tk.Label(header, text=f"TBox Resource Profile v26.0.1 — {proc_name}",
                  fg='#f0f6fc', bg='#0d1117', font=('', 13, 'bold')).pack(anchor='w')
+        ver_warn = check_csv_version(profile_dir)
+        if ver_warn:
+            tk.Label(header, text=f"⚠ {ver_warn}", fg='#f59e0b', bg='#0d1117', font=('', 9)).pack(anchor='w')
         tk.Label(header, text=f"Data: {profile_dir}",
                  fg='#8b949e', bg='#0d1117', font=('', 8)).pack(anchor='w')
 
@@ -317,7 +373,7 @@ class App(tk.Tk):
             mx = lambda d: f'{max(d):.0f}' if d else '0'
             label = f'Memory (KB) — max RSS:{mx(mem_rss)} PSS:{mx(mem_pss)} USS:{mx(mem_uss)}'
             chart = LineChart(grid, label, [mem_rss, mem_pss, mem_uss],
-                              labels=['RSS','PSS','USS'])
+                              labels=['RSS','PSS','USS'], sig_ok=sig('mem.csv'))
             chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
             grid.grid_rowconfigure(row//2, weight=1)
             row += 1
@@ -327,7 +383,7 @@ class App(tk.Tk):
             mx = lambda d: f'{max(d):.0f}' if d else '0'
             io_label = f'IO Throughput (KB/s) — max R:{mx(ior_data)} W:{mx(iow_data)}'
             chart = LineChart(grid, io_label, [ior_data, iow_data],
-                              labels=['Read','Write'])
+                              labels=['Read','Write'], sig_ok=sig('io.csv'))
             chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
             grid.grid_rowconfigure(row//2, weight=1)
             row += 1
@@ -346,7 +402,7 @@ class App(tk.Tk):
                     net_labels = [n for _, n in all_ifaces]
                     all_max = max(max(s) for s in net_series) if net_series else 0
                     chart = LineChart(grid, f'Network (KB/s) — max: {all_max:.0f}',
-                                      net_series, labels=net_labels)
+                                      net_series, labels=net_labels, sig_ok=sig('net.csv'))
                     chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
                     grid.grid_rowconfigure(row//2, weight=1)
                     row += 1
@@ -355,7 +411,7 @@ class App(tk.Tk):
             n = len(core_data)
             labels = [f'Core {i}' for i in range(n)]
             all_max = max(max(s) for s in core_data)
-            chart = LineChart(grid, f'Per-Core CPU (%) — max: {all_max:.1f}', core_data, labels=labels)
+            chart = LineChart(grid, f'Per-Core CPU (%) — max: {all_max:.1f}', core_data, labels=labels, sig_ok=sig('core.csv'))
             chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
             grid.grid_rowconfigure(row//2, weight=1)
 
