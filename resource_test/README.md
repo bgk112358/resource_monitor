@@ -324,8 +324,35 @@ PID:       346087
 
 ## Python 可视化工具（`python/`）
 
-> **前置条件**：`python/` 目录下的脚本通过 `subprocess` 调用 `../src/build/csv_verify` 验签。
-> 确保 C 工具已编译：`gcc -std=c11 -O2 src/app_profile/csv_verify.c src/app_profile/sign.c -o src/build/csv_verify -lcrypto`
+### 构建内嵌版本（推荐）
+
+`plot_gui.py` 和 `plot_profile.py` 默认已内嵌验签二进制，**可直接部署，无需额外文件**。
+
+如需重新构建内嵌版本（如更新了 csv_verify）：
+
+```bash
+cd python
+chmod +x build_embedded.sh
+./build_embedded.sh
+```
+
+此脚本会：
+1. 编译 `csv_verify` C 二进制
+2. Base64 编码后嵌入 `plot_gui.py` 和 `plot_profile.py`
+3. 首次运行时自动解码缓存到 `/tmp/.tbox_csv_verify_cached`，后续复用
+
+### 开发模式
+
+编辑源码时不嵌入二进制（便于快速迭代），Python 自动回退读取 `../src/build/csv_verify`：
+
+```bash
+# 先编译独立 csv_verify
+gcc -std=c11 -O2 src/app_profile/csv_verify.c src/app_profile/sign.c \
+    -o src/build/csv_verify -lcrypto
+
+# 直接运行 Python（开发模式）
+python3 plot_gui.py /tmp/test_xxx/
+```
 
 ### 本地 GUI 客户端 (`plot_gui.py`)
 

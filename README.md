@@ -16,8 +16,9 @@ resource_monitor/
 │   ├── src/system_stress/       # C 版系统压力负载生成器
 │   ├── scripts/                 # Shell 版测试脚本 (4 个)
 │   ├── python/
-│   │   ├── plot_profile.py      # CSV → 柱状图 HTML (零依赖)
-│   │   └── plot_gui.py          # tkinter GUI 本地客户端
+│   │   ├── plot_profile.py      # CSV → 柱状图 HTML (内嵌验签)
+│   │   ├── plot_gui.py          # tkinter GUI 本地客户端 (内嵌验签)
+│   │   └── build_embedded.sh    # 构建内嵌版本脚本
 │   ├── dummy_app/               # C 版模拟测试应用 (CMake + ARM 交叉编译)
 │   └── README.md                # 详细使用手册
 │
