@@ -99,9 +99,11 @@ def svg_line_chart_multi(series_list, width, height, ylabel, labels=None):
     xlbl = ''.join(f'<text x="{ml+i*pw/max(1,n-1):.1f}" y="{height-mb+16}" text-anchor="middle" fill="#888" font-size="9">{i+1}</text>' for i in range(0, n, step))
 
     # Legend
-    legend = ''.join(f'<line x1="{width-mr-68}" y1="{mt+4+si*14+5}" x2="{width-mr-54}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-50}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
+    n_lbl = len(series_list)
+    legend_bg = f'<rect x="{width-mr-62}" y="{mt-4}" width="62" height="{14*n_lbl+12}" fill="#161b22" rx="3"/>'
+    legend = ''.join(f'<line x1="{width-mr-40}" y1="{mt+4+si*14+5}" x2="{width-mr-26}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-22}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
 
-    return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="14" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend}</svg>'
+    return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="14" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend_bg}{legend}</svg>'
 
 
 def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None):
@@ -177,15 +179,26 @@ def build_html(profile_dir):
 
     charts = [
         ('CPU (%)', svg_bar_chart(cpu_raw,w,h,'#58a6ff',label_with_max(cpu_raw,'CPU Usage (%)'),sig_ok=sf('cpu'))),
-        ('Memory RSS (KB)', svg_bar_chart(mem_rss,w,h,'#3fb950',label_with_max(mem_rss,'Memory RSS (KB)'),sig_ok=sf('mem'))),
-        ('Memory PSS (KB)', svg_bar_chart(mem_pss,w,h,'#56d364',label_with_max(mem_pss,'Memory PSS (KB)'),sig_ok=sf('mem'))),
-        ('Memory USS (KB)', svg_bar_chart(mem_uss,w,h,'#26a641',label_with_max(mem_uss,'Memory USS (KB)'),sig_ok=sf('mem'))),
         ('Threads', svg_bar_chart(tr,w,h,'#f0883e',label_with_max(tr,'Thread Count'),sig_ok=sf('threads_fd'))),
         ('File Descriptors', svg_bar_chart(fd,w,h,'#d2a8ff',label_with_max(fd,'Open File Descriptors'),sig_ok=sf('threads_fd'))),
-        ('IO Read (KB/s)', svg_bar_chart(ior,w,h,'#f85149',label_with_max(ior,'IO Read Throughput (KB/s)'),sig_ok=sf('io'))),
-        ('IO Write (KB/s)', svg_bar_chart(iow,w,h,'#f59e0b',label_with_max(iow,'IO Write Throughput (KB/s)'),sig_ok=sf('io'))),
     ]
     panels = ''.join(f'<div class="chart-panel">{s}</div>' for _, s in charts)
+
+    # Memory line chart (RSS + PSS + USS)
+    if mem_rss and mem_pss and mem_uss:
+        mx = lambda d: f'{max(d):.0f}' if d else '0'
+        mem_label = f'Memory (KB) — max RSS:{mx(mem_rss)} PSS:{mx(mem_pss)} USS:{mx(mem_uss)}'
+        mem_chart = svg_line_chart_multi([mem_rss, mem_pss, mem_uss], w, h,
+                                          mem_label, labels=['RSS','PSS','USS'])
+        panels += f'<div class="chart-panel">{mem_chart}</div>'
+
+    # IO line chart (Read + Write)
+    if ior and iow:
+        mx = lambda d: f'{max(d):.0f}' if d else '0'
+        io_label = f'IO Throughput (KB/s) — max R:{mx(ior)} W:{mx(iow)}'
+        io_chart = svg_line_chart_multi([ior, iow], w, h, io_label, labels=['Read','Write'])
+        panels += f'<div class="chart-panel">{io_chart}</div>'
+
     if core_chart:
         panels += f'<div class="chart-panel">{core_chart}</div>'
     return f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>TBox Resource Profile — {proc_name}</title><style>*{{box-sizing:border-box;margin:0;padding:0}}body{{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;padding:24px 32px}}h1{{color:#f0f6fc;font-size:1.4rem;margin-bottom:4px}}.sub{{color:#8b949e;font-size:.85rem;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:18px}}.chart-panel{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px}}.chart-panel svg{{width:100%;height:auto;display:block}}.footer{{text-align:center;color:#8b949e;font-size:.75rem;margin-top:30px;padding-top:16px;border-top:1px solid #30363d}}</style></head><body><h1>TBox Resource Profile — {proc_name}</h1><p class="sub">Data source: {profile_dir}</p><div class="grid">{panels}</div><div class="footer"><p>Generated by plot_profile.py — TBox Resource Monitor Toolkit</p></div></body></html>'

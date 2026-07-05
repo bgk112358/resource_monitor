@@ -147,8 +147,11 @@ class LineChart(tk.Canvas):
             bx = ml + i * (pw / max(1, n-1))
             self.create_text(bx, h-mb+12, text=str(i+1), fill='#888', font=('',8), anchor='n')
 
-        # Legend
-        lx = w - mr - 50; ly = mt + 4
+        # Legend (background + text on top)
+        n_lbl = len(self.labels)
+        lx = w - mr - 30; ly = mt + 2
+        self.create_rectangle(lx-28, mt-4, w-mr+4, ly+14*n_lbl+4,
+                              fill='#161b22', outline='')
         for si, label in enumerate(self.labels):
             color = self.PALETTE[si % len(self.PALETTE)]
             self.create_line(lx-18, ly+5, lx-4, ly+5, fill=color, width=2)
@@ -298,13 +301,8 @@ class App(tk.Tk):
 
         charts = [
             ('CPU Usage (%)',         cpu_data,  'cpu',  sig('cpu.csv')),
-            ('Memory RSS (KB)',       mem_rss,   'mem',  sig('mem.csv')),
-            ('Memory PSS (KB)',       mem_pss,   'mem',  sig('mem.csv')),
-            ('Memory USS (KB)',       mem_uss,   'mem',  sig('mem.csv')),
             ('Thread Count',          thr_data,  'thr',  sig('threads_fd.csv')),
             ('Open File Descriptors', fd_data,   'fd',   sig('threads_fd.csv')),
-            ('IO Read (KB/s)',        ior_data,  'ior',  sig('io.csv')),
-            ('IO Write (KB/s)',       iow_data,  'iow',  sig('io.csv')),
         ]
         charts = [(t + max_str(d), d, ck, so) for t, d, ck, so in charts]
         for i, (title, data, ck, sig_ok) in enumerate(charts):
@@ -313,14 +311,35 @@ class App(tk.Tk):
             grid.grid_columnconfigure(i%2, weight=1)
             grid.grid_rowconfigure(i//2, weight=1)
 
-        # Per-core CPU chart (7th) — 折线图, 每个核心一条线
+        row = len(charts)
+        # Memory line chart (RSS + PSS + USS)
+        if mem_rss and mem_pss and mem_uss:
+            mx = lambda d: f'{max(d):.0f}' if d else '0'
+            label = f'Memory (KB) — max RSS:{mx(mem_rss)} PSS:{mx(mem_pss)} USS:{mx(mem_uss)}'
+            chart = LineChart(grid, label, [mem_rss, mem_pss, mem_uss],
+                              labels=['RSS','PSS','USS'])
+            chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
+            grid.grid_rowconfigure(row//2, weight=1)
+            row += 1
+
+        # IO line chart (Read + Write)
+        if ior_data and iow_data:
+            mx = lambda d: f'{max(d):.0f}' if d else '0'
+            io_label = f'IO Throughput (KB/s) — max R:{mx(ior_data)} W:{mx(iow_data)}'
+            chart = LineChart(grid, io_label, [ior_data, iow_data],
+                              labels=['Read','Write'])
+            chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
+            grid.grid_rowconfigure(row//2, weight=1)
+            row += 1
+
+        # Per-core CPU chart — 折线图, 每个核心一条线
         if core_data and len(core_data) > 0:
             n = len(core_data)
             labels = [f'Core {i}' for i in range(n)]
             all_max = max(max(s) for s in core_data)
             chart = LineChart(grid, f'Per-Core CPU (%) — max: {all_max:.1f}', core_data, labels=labels)
-            chart.grid(row=4, column=0, padx=6, pady=6, sticky='nsew')
-            grid.grid_rowconfigure(4, weight=1)
+            chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
+            grid.grid_rowconfigure(row//2, weight=1)
 
         footer = tk.Frame(self, bg='#0d1117')
         footer.pack(fill='x', padx=16, pady=(0, 8))
