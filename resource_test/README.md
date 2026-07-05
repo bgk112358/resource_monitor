@@ -153,9 +153,9 @@ gcc -std=c11 -O2 -D_GNU_SOURCE system_stress/main.c     -o build/system_stress  
 
 ```bash
 # 1. C 版资源画像 🟢 应用级 — 给定 PID, 采集该进程的资源占用
-./build/app_profile <PID> [duration_sec] [output_dir]
-./build/app_profile 12345 30 /tmp/my_test
-
+./build/app_profile [-w N] <PID|程序路径> [duration] [output_dir]
+./build/app_profile 12345 30 /tmp/test                              # PID 模式
+./build/app_profile -w 10 /opt/bin/app 60 /tmp/test               # 路径模式 (等10s)
 # 2. C 版稳定性监控 🟢 应用级 — 给定 PID, 24h 采样检测内存泄漏
 ./build/stability_monitor <PID> [output_csv]
 ./build/stability_monitor 12345 /tmp/stability.csv

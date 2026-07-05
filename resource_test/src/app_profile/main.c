@@ -15,6 +15,8 @@
 #include "sampler.h"
 #include "sign.h"
 #include <pthread.h>
+#include <sys/wait.h>
+#include <ctype.h>
 
 /* ── 并发采样参数 ──────────────────────────────── */
 typedef struct {
@@ -67,6 +69,7 @@ static void *net_thread(void *arg) {
 
 /* ── 主函数 ────────────────────────────────────── */
 #define APP_VERSION "26.0.1"
+#define DEFAULT_WAIT_SEC 3
 
 int main(int argc, char *argv[]) {
     if (argc == 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
@@ -74,14 +77,59 @@ int main(int argc, char *argv[]) {
         return 0;
     }
     if (argc < 2) {
-        fprintf(stderr, "用法: %s <PID> [duration_sec] [output_dir]\n", argv[0]);
+        fprintf(stderr, "用法: %s [-w wait_sec] <PID|程序路径> [duration_sec] [output_dir]\n", argv[0]);
+        fprintf(stderr, "  -w N  启动后等待 N 秒再采样 (默认 %d, 路径模式有效)\n", DEFAULT_WAIT_SEC);
         fprintf(stderr, "示例: %s 12345 30 /tmp/my_profile\n", argv[0]);
+        fprintf(stderr, "      %s /opt/tbox/bin/CloudGW 60 /tmp/test\n", argv[0]);
+        fprintf(stderr, "      %s -w 10 /opt/tbox/bin/CloudGW 60 /tmp/test\n", argv[0]);
         return 1;
     }
 
-    pid_t pid = (pid_t)atoi(argv[1]);
-    int duration = (argc > 2) ? atoi(argv[2]) : DEFAULT_DURATION;
-    const char *out_prefix = (argc > 3) ? argv[3] : NULL;
+    /* 解析 -w 参数 */
+    int wait_sec = DEFAULT_WAIT_SEC;
+    int arg_offset = 1;
+    if (strcmp(argv[1], "-w") == 0) {
+        if (argc < 4) { fprintf(stderr, "❌ -w 需要参数\n"); return 1; }
+        wait_sec = atoi(argv[2]);
+        if (wait_sec < 0) wait_sec = 0;
+        arg_offset = 3;
+    }
+
+    pid_t pid = 0;
+    int launched = 0;
+    int duration = (argc > arg_offset + 1) ? atoi(argv[arg_offset + 1]) : DEFAULT_DURATION;
+    const char *out_prefix = (argc > arg_offset + 2) ? argv[arg_offset + 2] : NULL;
+    char *target = argv[arg_offset];
+
+    /* 判断参数是 PID 还是程序路径 */
+    int is_pid = 1;
+    for (char *p = target; *p; p++) {
+        if (!isdigit((unsigned char)*p)) { is_pid = 0; break; }
+    }
+
+    if (is_pid) {
+        pid = (pid_t)atoi(target);
+    } else {
+        if (access(target, X_OK) != 0) {
+            fprintf(stderr, "❌ 程序不可执行: %s\n", target);
+            return 1;
+        }
+        pid = fork();
+        if (pid == 0) {
+            execvp(target, &argv[arg_offset]);
+            perror("execvp");
+            _exit(1);
+        }
+        if (pid < 0) { perror("fork"); return 1; }
+        launched = 1;
+        printf("🚀 已启动: %s (PID=%d), 等待 %ds 初始化...\n", target, pid, wait_sec);
+        sleep(wait_sec);
+        /* 检查子进程是否还活着 */
+        if (kill(pid, 0) != 0) {
+            fprintf(stderr, "❌ 进程 %s 启动后立即退出\n", argv[1]);
+            return 1;
+        }
+    }
 
     if (proc_validate(pid) != 0) {
         fprintf(stderr, "❌ 进程 PID=%d 不存在\n", pid);
