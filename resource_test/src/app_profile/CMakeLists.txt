@@ -10,6 +10,7 @@ add_executable(app_profile
     thread_fd_sampler.c
     io_sampler.c
     core_sampler.c
+    net_sampler.c
     report.c
     sign.c
 )

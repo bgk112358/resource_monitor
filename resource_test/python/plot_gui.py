@@ -333,6 +333,24 @@ class App(tk.Tk):
             row += 1
 
         # Per-core CPU chart — 折线图, 每个核心一条线
+        # Network line chart (only physical interfaces: eth*, ens*, wlan*)
+        net_path = csv_path('net.csv')
+        if os.path.exists(net_path):
+            net_cols = read_csv_multi(net_path)
+            if net_cols:
+                with open(net_path) as f:
+                    hdr = f.readline().strip().split(',')
+                all_ifaces = [(i, hdr[i+1]) for i in range(0, len(hdr)-1, 2)]
+                if all_ifaces:
+                    net_series = [net_cols[i] for i, _ in all_ifaces]
+                    net_labels = [n for _, n in all_ifaces]
+                    all_max = max(max(s) for s in net_series) if net_series else 0
+                    chart = LineChart(grid, f'Network (KB/s) — max: {all_max:.0f}',
+                                      net_series, labels=net_labels)
+                    chart.grid(row=row//2, column=row%2, padx=6, pady=6, sticky='nsew')
+                    grid.grid_rowconfigure(row//2, weight=1)
+                    row += 1
+
         if core_data and len(core_data) > 0:
             n = len(core_data)
             labels = [f'Core {i}' for i in range(n)]

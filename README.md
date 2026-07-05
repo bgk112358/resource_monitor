@@ -11,7 +11,7 @@ resource_monitor/
 ├── README.md                    ← 本文件
 │
 ├── resource_test/               ← 资源监测工具包 (C + Shell + Python)
-│   ├── src/app_profile/         # C 版资源画像采集器 (并发, 7 模块 + 签名+csv_verify)
+│   ├── src/app_profile/         # C 版资源画像采集器 (并发, 9 模块 + 签名+csv_verify)
 │   ├── src/stability_monitor/   # C 版 24h 稳定性监控
 │   ├── src/system_stress/       # C 版系统压力负载生成器
 │   ├── scripts/                 # Shell 版测试脚本 (4 个)

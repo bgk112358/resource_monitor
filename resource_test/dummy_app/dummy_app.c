@@ -39,6 +39,7 @@ static volatile int g_cycle_sec = 0;      /* 当前周期秒数 0-59 */
 static volatile int g_cpu_pct = 5;        /* 目标 CPU 占用 % */
 static volatile int g_io_rate_kbps = 10;   /* 目标 IO 写入速率 KB/s */
 static volatile int g_io_read_kbps = 10;   /* 目标 IO 读取速率 KB/s */
+static volatile int g_net_kbps = 10;       /* 目标网络发送速率 KB/s */
 static volatile int g_extra_threads = 0;   /* 动态创建的额外线程数 */
 static unsigned char *g_base_mem = NULL;  /* 常驻 8MB */
 static unsigned char *g_extra_mem = NULL; /* 动态 0-16MB */
@@ -57,6 +58,7 @@ static void update_cycle_params(int sec) {
         g_cpu_pct = 5;
         g_io_rate_kbps = 10;
         g_io_read_kbps = 10;
+        g_net_kbps = 10;
         g_extra_threads = 0;
         /* 释放额外内存 */
         if (g_extra_mem) { free(g_extra_mem); g_extra_mem = NULL; }
@@ -65,7 +67,8 @@ static void update_cycle_params(int sec) {
         g_extra_fd_count = 0;
     } else if (s < 25) {
         /* 10-25s: 高峰 — CPU 飙升 + 多线程 + 高 IO 读写 */
-        g_cpu_pct = 60 + (s % 5) * 4;  /* 60-80% 波动 */
+        g_cpu_pct = 60 + (s % 5) * 4;
+        g_net_kbps = 800;  /* 60-80% 波动 */
         g_io_rate_kbps = 1024;
         g_io_read_kbps = 512;
         g_extra_threads = 4;
@@ -75,6 +78,7 @@ static void update_cycle_params(int sec) {
         g_cpu_pct = 30;
         g_io_rate_kbps = 100;
         g_io_read_kbps = 200;
+        g_net_kbps = 200;
         g_extra_threads = 2;
         if (!g_extra_mem)
             g_extra_mem = (unsigned char *)calloc(16, 1024 * 1024);
@@ -83,6 +87,7 @@ static void update_cycle_params(int sec) {
         g_cpu_pct = 15 + (s % 5) * 2;
         g_io_rate_kbps = 50;
         g_io_read_kbps = 100;
+        g_net_kbps = 100;
         g_extra_threads = 1;
         if (g_extra_mem) { free(g_extra_mem); g_extra_mem = NULL; }
         /* 打开一些 FD */
@@ -96,6 +101,7 @@ static void update_cycle_params(int sec) {
         g_cpu_pct = 5;
         g_io_rate_kbps = 10;
         g_io_read_kbps = 10;
+        g_net_kbps = 10;
         g_extra_threads = 0;
         if (g_extra_mem) { free(g_extra_mem); g_extra_mem = NULL; }
         for (int i = 0; i < g_extra_fd_count; i++) close(g_extra_fds[i]);
@@ -213,6 +219,34 @@ static void *io_read_worker(void *arg) {
     return NULL;
 }
 
+/* ── 网络发送线程 (UDP, 抖动流量) ────────────────── */
+static void *net_sender(void *arg) {
+    int id = *(int *)arg;
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd < 0) { fprintf(stderr, "  [NET-S-%d] socket failed\n", id); return NULL; }
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(19998),
+                                .sin_addr.s_addr = inet_addr("127.0.0.1") };
+    printf("  [NET-S-%d] started (UDP 127.0.0.1:19998)\n", id);
+    char buf[1400]; memset(buf, 'N', sizeof(buf));
+
+    while (g_running) {
+        int kbps = g_net_kbps;
+        if (kbps <= 0) kbps = 1;
+        int bytes = kbps * 1024;
+        int bursts = (kbps > 100) ? (2 + rand() % 4) : 1;  /* 高负载时 2-5 次突发 */
+        int per_burst = bytes / bursts;
+        for (int b = 0; b < bursts && g_running; b++) {
+            for (int sent = 0; sent < per_burst; sent += sizeof(buf))
+                sendto(fd, buf, sizeof(buf), 0, (struct sockaddr *)&addr, sizeof(addr));
+            usleep(100000 / bursts + rand() % 50000);  /* 抖动延迟 */
+        }
+        sleep(1);
+    }
+    close(fd);
+    printf("  [NET-S-%d] stopped\n", id);
+    return NULL;
+}
+
 /* ── TCP 监听线程 ────────────────────────────────── */
 static void *net_worker(void *arg) {
     int id = *(int *)arg;
@@ -282,16 +316,17 @@ int main(int argc, char *argv[]) {
     pthread_t timer_tid;
     pthread_create(&timer_tid, NULL, cycle_timer, NULL);
 
-    /* 常驻线程: 2 CPU + 1 IO写 + 1 IO读 + 1 NET + 1 线程管理 */
-    pthread_t threads[6];
-    int ids[] = {1, 2, 1, 1, 1, 0};
+    /* 常驻线程: 2 CPU + 1 IO写 + 1 IO读 + 1 NET-Sender + 1 NET-Listen + 1 线程管理 */
+    pthread_t threads[7];
+    int ids[] = {1, 2, 1, 1, 1, 1, 0};
     pthread_create(&threads[0], NULL, cpu_worker,      &ids[0]);
     pthread_create(&threads[1], NULL, cpu_worker,      &ids[1]);
     pthread_create(&threads[2], NULL, io_worker,       &ids[2]);
     pthread_create(&threads[3], NULL, io_read_worker,  &ids[3]);
-    pthread_create(&threads[4], NULL, net_worker,      &ids[4]);
-    pthread_create(&threads[5], NULL, thread_manager,  &ids[5]);
-    printf("[THREADS] 6 base threads + dynamic extras\n");
+    pthread_create(&threads[4], NULL, net_sender,      &ids[4]);
+    pthread_create(&threads[5], NULL, net_worker,      &ids[5]);
+    pthread_create(&threads[6], NULL, thread_manager,  &ids[6]);
+    printf("[THREADS] 7 base threads + dynamic extras\n");
 
     printf("[STATUS] running... %s\n", duration > 0 ? "(will auto-stop)" : "(Ctrl+C to stop)");
 
@@ -300,7 +335,7 @@ int main(int argc, char *argv[]) {
 
     printf("[STOP] waiting for threads...\n");
     pthread_join(timer_tid, NULL);
-    for (int i = 0; i < 6; i++) pthread_join(threads[i], NULL);
+    for (int i = 0; i < 7; i++) pthread_join(threads[i], NULL);
 
     free(g_base_mem);
     if (g_extra_mem) free(g_extra_mem);

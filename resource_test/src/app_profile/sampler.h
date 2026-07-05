@@ -85,6 +85,9 @@ int   io_sampler_run(pid_t pid, int count, int interval_sec, ResourceSnapshot *s
 /* core_sampler: 系统 per-core CPU 占用率 */
 int   core_sampler_run(int duration, int *out_cores, FILE *csv);
 
+/* net_sampler: 网络接口吞吐量 (上行/下行) */
+int   net_sampler_run(int duration, int *out_count, FILE *csv);
+
 /* report: 输出目录 / CSV / 报告生成 */
 char *report_mk_outdir(const char *prefix, pid_t pid);
 FILE *report_csv_open(const char *dir, const char *name, const char *header);

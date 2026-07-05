@@ -53,10 +53,15 @@ static void *io_thread(void *arg) {
 }
 
 /* ── Core 线程入口 ──────────────────────────────── */
-typedef struct { int duration; int *out_cores; FILE *csv; } CoreArgs;
+typedef struct { int duration; int *out_count; FILE *csv; } CountArgs;
 static void *core_thread(void *arg) {
-    CoreArgs *a = (CoreArgs *)arg;
-    core_sampler_run(a->duration, a->out_cores, a->csv);
+    CountArgs *a = (CountArgs *)arg;
+    core_sampler_run(a->duration, a->out_count, a->csv);
+    return NULL;
+}
+static void *net_thread(void *arg) {
+    CountArgs *a = (CountArgs *)arg;
+    net_sampler_run(a->duration, a->out_count, a->csv);
     return NULL;
 }
 
@@ -91,11 +96,14 @@ int main(int argc, char *argv[]) {
     FILE *fcpu = report_csv_open(outdir, "cpu.csv",  "sec,cpu_percent");
     FILE *fmem = report_csv_open(outdir, "mem.csv",  "sample,rss_kb,pss_kb,uss_kb");
     FILE *fthr = report_csv_open(outdir, "threads_fd.csv", "sample,threads,fd_count");
-    FILE *fio  = report_csv_open(outdir, "io.csv",   "sample,read_kb,write_kb");
+    FILE *fio  = report_csv_open(outdir, "io.csv",   "sample,read_kB,write_kB");
     /* core.csv header written by core_sampler itself */
     char core_path[MAX_PATH];
     snprintf(core_path, sizeof(core_path), "%s/core.csv", outdir);
     FILE *fcore = fopen(core_path, "w");
+    char net_path[MAX_PATH];
+    snprintf(net_path, sizeof(net_path), "%s/net.csv", outdir);
+    FILE *fnet = fopen(net_path, "w");
 
     /* 准备采样快照和参数 */
     ResourceSnapshot snap_cpu, snap_mem, snap_thr, snap_io;
@@ -109,23 +117,26 @@ int main(int argc, char *argv[]) {
     SamplerArgs thr_args = { pid, duration, &snap_thr, fthr };
     SamplerArgs io_args  = { pid, duration, &snap_io,  fio  };
 
-    /* ── 启动 5 个采样线程, 并发运行 duration 秒 ── */
-    pthread_t t_cpu, t_mem, t_thr, t_io, t_core;
-    int core_count = 0;
-    CoreArgs core_args = { duration, &core_count, fcore };
+    /* ── 启动 6 个采样线程, 并发运行 duration 秒 ── */
+    pthread_t t_cpu, t_mem, t_thr, t_io, t_core, t_net;
+    int core_count = 0, net_count = 0;
+    CountArgs core_args = { duration, &core_count, fcore };
+    CountArgs net_args  = { duration, &net_count,  fnet  };
     if (fcpu)  pthread_create(&t_cpu,  NULL, cpu_thread,  &cpu_args);
     if (fmem)  pthread_create(&t_mem,  NULL, mem_thread,  &mem_args);
     if (fthr)  pthread_create(&t_thr,  NULL, thrfd_thread,&thr_args);
     if (fio)   pthread_create(&t_io,   NULL, io_thread,   &io_args);
     if (fcore) pthread_create(&t_core, NULL, core_thread, &core_args);
+    if (fnet)  pthread_create(&t_net,  NULL, net_thread,  &net_args);
 
     if (fcpu)  pthread_join(t_cpu,  NULL);
     if (fmem)  pthread_join(t_mem,  NULL);
     if (fthr)  pthread_join(t_thr,  NULL);
     if (fio)   pthread_join(t_io,   NULL);
     if (fcore) pthread_join(t_core, NULL);
+    if (fnet)  pthread_join(t_net,  NULL);
 
-    fclose(fcpu); fclose(fmem); fclose(fthr); fclose(fio); fclose(fcore);
+    fclose(fcpu); fclose(fmem); fclose(fthr); fclose(fio); fclose(fcore); fclose(fnet);
 
     /* ── 签名为防伪 ──────────────────────────── */
     char csv_path[MAX_PATH];
@@ -134,6 +145,7 @@ int main(int argc, char *argv[]) {
     snprintf(csv_path, sizeof(csv_path), "%s/threads_fd.csv", outdir); sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/io.csv", outdir);         sign_file(csv_path);
     snprintf(csv_path, sizeof(csv_path), "%s/core.csv", outdir);       sign_file(csv_path);
+    snprintf(csv_path, sizeof(csv_path), "%s/net.csv", outdir);        sign_file(csv_path);
 
     /* ── 合并快照 ──────────────────────────── */
     ResourceSnapshot snap;
