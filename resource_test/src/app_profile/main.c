@@ -66,7 +66,13 @@ static void *net_thread(void *arg) {
 }
 
 /* ── 主函数 ────────────────────────────────────── */
+#define APP_VERSION "26.0.1"
+
 int main(int argc, char *argv[]) {
+    if (argc == 2 && (strcmp(argv[1], "-v") == 0 || strcmp(argv[1], "--version") == 0)) {
+        printf("app_profile v%s\n", APP_VERSION);
+        return 0;
+    }
     if (argc < 2) {
         fprintf(stderr, "用法: %s <PID> [duration_sec] [output_dir]\n", argv[0]);
         fprintf(stderr, "示例: %s 12345 30 /tmp/my_profile\n", argv[0]);

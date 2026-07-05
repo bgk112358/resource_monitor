@@ -372,6 +372,9 @@ class App(tk.Tk):
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 2 and sys.argv[1] in ('-v', '--version'):
+        print('plot_gui.py v26.0.1')
+        sys.exit(0)
     if len(sys.argv) < 2:
         print(f"用法: {sys.argv[0]} <profile_dir>")
         sys.exit(1)
