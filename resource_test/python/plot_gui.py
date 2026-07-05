@@ -242,7 +242,7 @@ class BarChart(tk.Canvas):
 class App(tk.Tk):
     def __init__(self, profile_dir):
         super().__init__()
-        self.title("TBox Resource Profile")
+        self.title("TBox Resource Profile v26.0.1")
         self.configure(bg='#0d1117')
 
         proc_name = "unknown"
@@ -255,7 +255,7 @@ class App(tk.Tk):
 
         header = tk.Frame(self, bg='#0d1117')
         header.pack(fill='x', padx=16, pady=(12, 4))
-        tk.Label(header, text=f"TBox Resource Profile — {proc_name}",
+        tk.Label(header, text=f"TBox Resource Profile v26.0.1 — {proc_name}",
                  fg='#f0f6fc', bg='#0d1117', font=('', 13, 'bold')).pack(anchor='w')
         tk.Label(header, text=f"Data: {profile_dir}",
                  fg='#8b949e', bg='#0d1117', font=('', 8)).pack(anchor='w')

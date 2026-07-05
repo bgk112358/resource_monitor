@@ -53,6 +53,8 @@ typedef struct {
     int    io_samples;
 
     int    child_count;
+    int    core_count;
+    int    net_iface_count;
 } ResourceSnapshot;
 
 /* ── CSV 文件句柄 ──────────────────────────────── */

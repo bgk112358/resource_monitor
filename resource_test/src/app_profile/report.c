@@ -62,8 +62,10 @@ int report_write(const char *dir, const char *proc_name, pid_t pid,
         "  写吞吐:    %ld KB/s\n"
         "  采样次数:  %d\n"
         "\n"
-        "── 子进程 ───────────────────────────\n"
-        "  子进程数:  %d\n"
+        "── 系统 ─────────────────────────────\n"
+        "  CPU 核心数:  %d\n"
+        "  网络接口数:  %d\n"
+        "  子进程数:    %d\n"
         "========================================\n",
         proc_name, pid, duration, ctime(&(time_t){time(NULL)}),
         snap->cpu_avg, snap->cpu_peak, snap->cpu_samples,
@@ -73,7 +75,7 @@ int report_write(const char *dir, const char *proc_name, pid_t pid,
         snap->mem_samples,
         snap->threads, snap->fds, snap->thrfd_samples,
         snap->io_read_kb, snap->io_write_kb, snap->io_samples,
-        snap->child_count);
+        snap->core_count, snap->net_iface_count, snap->child_count);
     fclose(f);
 
     /* 打印到 stdout */

@@ -216,7 +216,9 @@ int main(int argc, char *argv[]) {
     snap.io_read_kb  = snap_io.io_read_kb;
     snap.io_write_kb = snap_io.io_write_kb;
     snap.io_samples  = snap_io.io_samples;
-    snap.child_count = proc_count_children(pid);
+    snap.child_count     = proc_count_children(pid);
+    snap.core_count      = core_count;
+    snap.net_iface_count = net_count;
 
     report_write(outdir, proc_name, pid, duration, &snap);
     free(outdir);
