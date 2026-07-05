@@ -55,6 +55,50 @@ def read_csv_multi(path):
             except (ValueError, IndexError): pass
     return a, b
 
+PALETTE = ['#58a6ff','#3fb950','#f0883e','#d2a8ff','#f85149','#f59e0b',
+           '#79c0ff','#56d364','#e29b44','#bc8cff','#ff7b72','#f2cc60']
+
+def svg_line_chart_multi(series_list, width, height, ylabel, labels=None):
+    """多系列折线图 SVG — 每个核心一条线"""
+    if not series_list or not series_list[0]:
+        return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="{height//2}" text-anchor="middle" fill="#888">No data</text></svg>'
+
+    all_y = [y for s in series_list for y in s]
+    ymax = max(all_y) if all_y else 1
+    if ymax <= 10:   ymax = int(ymax) + 1
+    elif ymax <= 100: ymax = ((int(ymax)//10)+1)*10
+    else:             ymax = ((int(ymax)//100)+1)*100
+    if ymax == 0: ymax = 1
+
+    ml, mr, mt, mb = 52, 20, 26, 32
+    pw = width - ml - mr; ph = height - mt - mb
+    def ty(y): return height - mb - (y / ymax) * ph
+
+    n_labels = labels if labels else [f'Core {i}' for i in range(len(series_list))]
+
+    # 网格 + Y 轴
+    grid = ''.join(f'<line x1="{ml}" y1="{mt+ph*i/4:.1f}" x2="{width-mr}" y2="{mt+ph*i/4:.1f}" stroke="#333" stroke-dasharray="4,4"/>' for i in range(5))
+    ylbl = ''.join(f'<text x="{ml-6}" y="{mt+ph*(4-i)/4+4:.1f}" text-anchor="end" fill="#888" font-size="10">{ymax*i/4:.0f}</text>' for i in range(5))
+
+    # 每条线
+    lines = ''
+    for si, series in enumerate(series_list):
+        if len(series) < 2: continue
+        color = PALETTE[si % len(PALETTE)]
+        n = len(series); gap = pw / max(1, n-1)
+        pts = ' '.join(f'{ml+i*gap:.1f},{ty(y):.1f}' for i, y in enumerate(series))
+        lines += f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="2" stroke-linejoin="round"/>'
+
+    # X labels
+    n = len(series_list[0]); step = max(1, n//8)
+    xlbl = ''.join(f'<text x="{ml+i*pw/max(1,n-1):.1f}" y="{height-mb+16}" text-anchor="middle" fill="#888" font-size="9">{i+1}</text>' for i in range(0, n, step))
+
+    # Legend
+    legend = ''.join(f'<line x1="{width-mr-28}" y1="{mt+4+si*14+5}" x2="{width-mr-14}" y2="{mt+4+si*14+5}" stroke="{PALETTE[si%len(PALETTE)]}" stroke-width="2"/><text x="{width-mr-10}" y="{mt+4+si*14+5}" fill="#888" font-size="8">{n_labels[si]}</text>' for si in range(len(series_list)))
+
+    return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="14" text-anchor="middle" fill="#ccc" font-size="13" font-weight="bold">{ylabel}</text>{grid}{ylbl}{xlbl}<line x1="{ml}" y1="{height-mb}" x2="{width-mr}" y2="{height-mb}" stroke="#555" stroke-width="1"/><line x1="{ml}" y1="{mt}" x2="{ml}" y2="{height-mb}" stroke="#555" stroke-width="1"/>{lines}{legend}</svg>'
+
+
 def svg_bar_chart(data, width, height, color, ylabel, sig_ok=None):
     if not data:
         return f'<svg viewBox="0 0 {width} {height}" xmlns="http://www.w3.org/2000/svg"><rect x="0" y="0" width="{width}" height="{height}" fill="#161b22" rx="4"/><text x="{width//2}" y="{height//2}" text-anchor="middle" fill="#888">No data</text></svg>'
@@ -98,8 +142,36 @@ def build_html(profile_dir):
     mem_raw = read_csv(os.path.join(profile_dir,"mem.csv"))
     tr, fd = read_csv_multi(os.path.join(profile_dir,"threads_fd.csv"))
     ior, iow = read_csv_multi(os.path.join(profile_dir,"io.csv"))
+    # core.csv: variable columns, read all
+    core_cols = []
+    core_path = os.path.join(profile_dir, "core.csv")
+    if os.path.exists(core_path):
+        core_cols = read_csv_multi(core_path)  # returns ([c0%,...], [c1%,...], ...) but read_csv_multi only reads 2 cols
+    # Re-read core.csv properly for multi-column
+    core_data = []  # list of lists: [[core0_vals], [core1_vals], ...]
+    if os.path.exists(core_path):
+        with open(core_path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'): continue
+                parts = line.split(',')
+                if parts[0] == 'sec':  # header
+                    core_data = [[] for _ in range(len(parts)-1)]
+                    continue
+                try:
+                    for c in range(1, len(parts)):
+                        core_data[c-1].append(float(parts[c]))
+                except (ValueError, IndexError): pass
     w, h = 500, 260
     sf = lambda k: sig[k][0] if sig.get(k) else None
+    # Per-core CPU chart (show all cores as average, or first core if only 1)
+    core_chart = ''
+    if core_data and len(core_data) > 0:
+        n = len(core_data)
+        label = f'Per-Core CPU ({n} cores)' if n > 1 else 'Per-Core CPU (1 core)'
+        core_labels = [f'Core {i}' for i in range(n)]
+        core_chart = svg_line_chart_multi(core_data, w, h, label, labels=core_labels)
+
     charts = [
         ('CPU (%)', svg_bar_chart(cpu_raw,w,h,'#58a6ff','CPU Usage (%)',sig_ok=sf('cpu'))),
         ('Memory RSS (KB)', svg_bar_chart(mem_raw,w,h,'#3fb950','Memory RSS (KB)',sig_ok=sf('mem'))),
@@ -109,6 +181,8 @@ def build_html(profile_dir):
         ('IO Write (KB/s)', svg_bar_chart(iow,w,h,'#f59e0b','IO Write Throughput (KB/s)',sig_ok=sf('io'))),
     ]
     panels = ''.join(f'<div class="chart-panel">{s}</div>' for _, s in charts)
+    if core_chart:
+        panels += f'<div class="chart-panel">{core_chart}</div>'
     return f'<!DOCTYPE html><html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>TBox Resource Profile — {proc_name}</title><style>*{{box-sizing:border-box;margin:0;padding:0}}body{{background:#0d1117;color:#c9d1d9;font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;padding:24px 32px}}h1{{color:#f0f6fc;font-size:1.4rem;margin-bottom:4px}}.sub{{color:#8b949e;font-size:.85rem;margin-bottom:24px}}.grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(520px,1fr));gap:18px}}.chart-panel{{background:#161b22;border:1px solid #30363d;border-radius:8px;padding:12px}}.chart-panel svg{{width:100%;height:auto;display:block}}.footer{{text-align:center;color:#8b949e;font-size:.75rem;margin-top:30px;padding-top:16px;border-top:1px solid #30363d}}</style></head><body><h1>TBox Resource Profile — {proc_name}</h1><p class="sub">Data source: {profile_dir}</p><div class="grid">{panels}</div><div class="footer"><p>Generated by plot_profile.py — TBox Resource Monitor Toolkit</p></div></body></html>'
 
 if __name__ == '__main__':

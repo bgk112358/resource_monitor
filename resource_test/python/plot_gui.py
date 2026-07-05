@@ -78,6 +78,81 @@ def read_csv_multi(path):
     return a, b
 
 
+class LineChart(tk.Canvas):
+    """多系列折线图 — 每个系列一个颜色"""
+    PALETTE = ['#58a6ff','#3fb950','#f0883e','#d2a8ff','#f85149','#f59e0b',
+               '#79c0ff','#56d364','#e29b44','#bc8cff','#ff7b72','#f2cc60']
+
+    def __init__(self, parent, title, series_list, labels=None, **kw):
+        """series_list: [[y1,y2,...], [y1,y2,...], ...] 每个子列表是一个核心"""
+        w = kw.pop('width', 460); h = kw.pop('height', 220)
+        super().__init__(parent, width=w, height=h, bg='#161b22',
+                         highlightthickness=1, highlightbackground='#30363d', **kw)
+        self.title = title
+        self.series = series_list
+        self.labels = labels if labels else [f'core{i}' for i in range(len(series_list))]
+        self._draw()
+
+    def _draw(self):
+        self.delete('all')
+        w = int(self['width']); h = int(self['height'])
+        ml, mr, mt, mb = 52, 20, 26, 32
+        pw = w - ml - mr; ph = h - mt - mb
+        if not self.series or not self.series[0]:
+            self.create_text(w//2, h//2, text='No data', fill='#888', font=('',11))
+            return
+
+        # 全局 ymax
+        all_y = [y for s in self.series for y in s]
+        ymax = max(all_y) if all_y else 1
+        if ymax <= 10:   ymax = int(ymax) + 1
+        elif ymax <= 100: ymax = ((int(ymax)//10)+1)*10
+        else:             ymax = ((int(ymax)//100)+1)*100
+        if ymax == 0: ymax = 1
+
+        def ty(y): return h - mb - (y / ymax) * ph
+
+        # 标题
+        self.create_text(w//2, 12, text=self.title, fill='#ccc', font=('',11,'bold'))
+
+        # 网格 + Y 轴
+        for i in range(5):
+            gy = mt + ph * i / 4
+            self.create_line(ml, gy, w-mr, gy, fill='#333', dash=(3,3))
+            val = ymax * i / 4; gy2 = mt + ph*(4-i)/4
+            self.create_text(ml-6, gy2+4, text=f'{val:.0f}', fill='#888', font=('',8), anchor='e')
+
+        # X 轴
+        self.create_line(ml, h-mb, w-mr, h-mb, fill='#555')
+        self.create_line(ml, mt, ml, h-mb, fill='#555')
+
+        # 每条线
+        for si, series in enumerate(self.series):
+            if len(series) < 2: continue
+            color = self.PALETTE[si % len(self.PALETTE)]
+            n = len(series); gap = pw / max(1, n-1)
+            pts = []
+            for i, y in enumerate(series):
+                x = ml + i * gap
+                pts.extend([x, ty(y)])
+            if len(pts) >= 4:
+                self.create_line(*pts, fill=color, width=2, smooth=False)
+
+        # X labels
+        n = len(self.series[0]); step = max(1, n // 8)
+        for i in range(0, n, step):
+            bx = ml + i * (pw / max(1, n-1))
+            self.create_text(bx, h-mb+12, text=str(i+1), fill='#888', font=('',8), anchor='n')
+
+        # Legend
+        lx = w - mr - 10; ly = mt + 4
+        for si, label in enumerate(self.labels):
+            color = self.PALETTE[si % len(self.PALETTE)]
+            self.create_line(lx-18, ly+5, lx-4, ly+5, fill=color, width=2)
+            self.create_text(lx, ly, text=label, fill='#888', font=('',7), anchor='w')
+            ly += 14
+
+
 class BarChart(tk.Canvas):
     COLORS = {
         'cpu': '#58a6ff', 'mem': '#3fb950', 'thr': '#f0883e',
@@ -151,13 +226,12 @@ class BarChart(tk.Canvas):
             by = ty_(y); bh = max(1, ty_(0) - ty_(y))
             self.create_rectangle(bx, by, bx+bar_w, by+bh, fill=self.color, outline='')
 
-        step = max(1, n // 8)
+        k = max(n, 1); step = 1
+        while k // step > 8: step += 1
         for i in range(0, n, step):
             bx = ml + gap * i + gap/2
             self.create_text(bx, h-mb+12, text=str(i+1), fill='#888', font=('', 8), anchor='n')
-        if n > 1 and (n-1) % step != 0:
-            bx = ml + gap * (n-1) + gap/2
-            self.create_text(bx, h-mb+12, text=str(n), fill='#888', font=('', 8), anchor='n')
+
 
 
 class App(tk.Tk):
@@ -189,6 +263,22 @@ class App(tk.Tk):
         mem_data = read_csv(csv_path('mem.csv'))
         thr_data, fd_data = read_csv_multi(csv_path('threads_fd.csv'))
         ior_data, iow_data = read_csv_multi(csv_path('io.csv'))
+        # core.csv: multi-column, auto-detect core count
+        core_data = []  # [[c0%,...], [c1%,...], ...]
+        core_f = csv_path('core.csv')
+        if os.path.exists(core_f):
+            with open(core_f) as f:
+                for line in f:
+                    line = line.strip()
+                    if not line or line.startswith('#'): continue
+                    parts = line.split(',')
+                    if parts[0] == 'sec':
+                        core_data = [[] for _ in range(len(parts)-1)]
+                        continue
+                    try:
+                        for c in range(1, len(parts)):
+                            core_data[c-1].append(float(parts[c]))
+                    except (ValueError, IndexError): pass
 
         def sig(fname):
             r = verify_csv_signature(csv_path(fname))
@@ -207,6 +297,15 @@ class App(tk.Tk):
             chart.grid(row=i//2, column=i%2, padx=6, pady=6, sticky='nsew')
             grid.grid_columnconfigure(i%2, weight=1)
             grid.grid_rowconfigure(i//2, weight=1)
+
+        # Per-core CPU chart (7th) — 折线图, 每个核心一条线
+        if core_data and len(core_data) > 0:
+            n = len(core_data)
+            labels = [f'Core {i}' for i in range(n)]
+            chart = LineChart(grid, f'Per-Core CPU ({n} cores)', core_data, labels=labels,
+                              width=420, height=200)
+            chart.grid(row=3, column=0, padx=6, pady=6, sticky='nsew')
+            grid.grid_rowconfigure(3, weight=1)
 
         footer = tk.Frame(self, bg='#0d1117')
         footer.pack(fill='x', padx=16, pady=(0, 8))

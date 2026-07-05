@@ -62,7 +62,6 @@ int cpu_sampler_run(pid_t pid, int duration, ResourceSnapshot *snap, FILE *csv) 
         if (total2 < total1) continue;
 
         double pct = (double)(total2 - total1) / (double)ticks_per_sec / elapsed * 100.0;
-        if (pct > 100) pct = 100;
 
         fprintf(csv, "%d,%.1f\n", sec, pct);
         fflush(csv);

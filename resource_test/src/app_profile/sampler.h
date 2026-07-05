@@ -80,6 +80,9 @@ int   thrfd_sampler_run(pid_t pid, int count, int interval_sec, ResourceSnapshot
 /* io_sampler: 磁盘 IO 读写量采样 */
 int   io_sampler_run(pid_t pid, int count, int interval_sec, ResourceSnapshot *snap, FILE *csv);
 
+/* core_sampler: 系统 per-core CPU 占用率 */
+int   core_sampler_run(int duration, int *out_cores, FILE *csv);
+
 /* report: 输出目录 / CSV / 报告生成 */
 char *report_mk_outdir(const char *prefix, pid_t pid);
 FILE *report_csv_open(const char *dir, const char *name, const char *header);

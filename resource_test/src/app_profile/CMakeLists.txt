@@ -9,6 +9,7 @@ add_executable(app_profile
     mem_sampler.c
     thread_fd_sampler.c
     io_sampler.c
+    core_sampler.c
     report.c
     sign.c
 )
