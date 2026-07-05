@@ -40,6 +40,8 @@ typedef struct {
     int    cpu_samples;
 
     long   rss_kb;
+    long   pss_kb;
+    long   uss_kb;
     int    mem_samples;
 
     int    threads;

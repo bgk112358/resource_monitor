@@ -44,16 +44,21 @@ def read_csv(path):
     return rows
 
 def read_csv_multi(path):
-    a, b = [], []
+    """读取多列 CSV, 返回列列表的列表 [[col0,...], [col1,...], ...]"""
+    cols = []
     with open(path, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'): continue
             parts = line.split(',')
+            if parts[0] == 'sample' or parts[0] == 'sec':
+                cols = [[] for _ in range(len(parts)-1)]
+                continue
             try:
-                if len(parts) >= 3: a.append(float(parts[1])); b.append(float(parts[2]))
+                for c in range(1, len(parts)):
+                    cols[c-1].append(float(parts[c]))
             except (ValueError, IndexError): pass
-    return a, b
+    return cols
 
 PALETTE = ['#58a6ff','#3fb950','#f0883e','#d2a8ff','#f85149','#f59e0b',
            '#79c0ff','#56d364','#e29b44','#bc8cff','#ff7b72','#f2cc60']
@@ -139,29 +144,21 @@ def build_html(profile_dir):
         fp = os.path.join(profile_dir, fn)
         sig[k] = verify_csv_signature(fp) if os.path.exists(fp) else (None, None)
     cpu_raw = read_csv(os.path.join(profile_dir,"cpu.csv"))
-    mem_raw = read_csv(os.path.join(profile_dir,"mem.csv"))
-    tr, fd = read_csv_multi(os.path.join(profile_dir,"threads_fd.csv"))
-    ior, iow = read_csv_multi(os.path.join(profile_dir,"io.csv"))
+    mem_cols = read_csv_multi(os.path.join(profile_dir,"mem.csv"))
+    mem_rss = mem_cols[0] if mem_cols else []
+    mem_pss = mem_cols[1] if len(mem_cols) > 1 else []
+    mem_uss = mem_cols[2] if len(mem_cols) > 2 else []
+    thr_cols = read_csv_multi(os.path.join(profile_dir,"threads_fd.csv"))
+    tr  = thr_cols[0] if thr_cols else []
+    fd  = thr_cols[1] if len(thr_cols) > 1 else []
+    io_cols = read_csv_multi(os.path.join(profile_dir,"io.csv"))
+    ior = io_cols[0] if io_cols else []
+    iow = io_cols[1] if len(io_cols) > 1 else []
     # core.csv: variable columns, read all
     core_cols = []
     core_path = os.path.join(profile_dir, "core.csv")
     if os.path.exists(core_path):
-        core_cols = read_csv_multi(core_path)  # returns ([c0%,...], [c1%,...], ...) but read_csv_multi only reads 2 cols
-    # Re-read core.csv properly for multi-column
-    core_data = []  # list of lists: [[core0_vals], [core1_vals], ...]
-    if os.path.exists(core_path):
-        with open(core_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith('#'): continue
-                parts = line.split(',')
-                if parts[0] == 'sec':  # header
-                    core_data = [[] for _ in range(len(parts)-1)]
-                    continue
-                try:
-                    for c in range(1, len(parts)):
-                        core_data[c-1].append(float(parts[c]))
-                except (ValueError, IndexError): pass
+        core_data = read_csv_multi(core_path) if os.path.exists(core_path) else []
     w, h = 500, 260
     sf = lambda k: sig[k][0] if sig.get(k) else None
     # Per-core CPU chart (show all cores as average, or first core if only 1)
@@ -180,7 +177,9 @@ def build_html(profile_dir):
 
     charts = [
         ('CPU (%)', svg_bar_chart(cpu_raw,w,h,'#58a6ff',label_with_max(cpu_raw,'CPU Usage (%)'),sig_ok=sf('cpu'))),
-        ('Memory RSS (KB)', svg_bar_chart(mem_raw,w,h,'#3fb950',label_with_max(mem_raw,'Memory RSS (KB)'),sig_ok=sf('mem'))),
+        ('Memory RSS (KB)', svg_bar_chart(mem_rss,w,h,'#3fb950',label_with_max(mem_rss,'Memory RSS (KB)'),sig_ok=sf('mem'))),
+        ('Memory PSS (KB)', svg_bar_chart(mem_pss,w,h,'#56d364',label_with_max(mem_pss,'Memory PSS (KB)'),sig_ok=sf('mem'))),
+        ('Memory USS (KB)', svg_bar_chart(mem_uss,w,h,'#26a641',label_with_max(mem_uss,'Memory USS (KB)'),sig_ok=sf('mem'))),
         ('Threads', svg_bar_chart(tr,w,h,'#f0883e',label_with_max(tr,'Thread Count'),sig_ok=sf('threads_fd'))),
         ('File Descriptors', svg_bar_chart(fd,w,h,'#d2a8ff',label_with_max(fd,'Open File Descriptors'),sig_ok=sf('threads_fd'))),
         ('IO Read (KB/s)', svg_bar_chart(ior,w,h,'#f85149',label_with_max(ior,'IO Read Throughput (KB/s)'),sig_ok=sf('io'))),

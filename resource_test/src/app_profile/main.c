@@ -89,7 +89,7 @@ int main(int argc, char *argv[]) {
 
     /* 打开 CSV */
     FILE *fcpu = report_csv_open(outdir, "cpu.csv",  "sec,cpu_percent");
-    FILE *fmem = report_csv_open(outdir, "mem.csv",  "sample,rss_kb");
+    FILE *fmem = report_csv_open(outdir, "mem.csv",  "sample,rss_kb,pss_kb,uss_kb");
     FILE *fthr = report_csv_open(outdir, "threads_fd.csv", "sample,threads,fd_count");
     FILE *fio  = report_csv_open(outdir, "io.csv",   "sample,read_kb,write_kb");
     /* core.csv header written by core_sampler itself */
@@ -141,6 +141,8 @@ int main(int argc, char *argv[]) {
     snap.cpu_peak    = snap_cpu.cpu_peak;
     snap.cpu_samples = snap_cpu.cpu_samples;
     snap.rss_kb      = snap_mem.rss_kb;
+    snap.pss_kb      = snap_mem.pss_kb;
+    snap.uss_kb      = snap_mem.uss_kb;
     snap.mem_samples = snap_mem.mem_samples;
     snap.threads     = snap_thr.threads;
     snap.fds         = snap_thr.fds;

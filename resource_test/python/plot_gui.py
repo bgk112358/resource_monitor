@@ -62,20 +62,23 @@ def read_csv(path):
 
 
 def read_csv_multi(path):
-    a, b = [], []
+    """读取多列 CSV, 返回列列表的列表 [[col0,...], [col1,...], ...]"""
+    cols = []
     with open(path, 'r') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
                 continue
             parts = line.split(',')
+            if parts[0] == 'sample' or parts[0] == 'sec':
+                cols = [[] for _ in range(len(parts)-1)]
+                continue
             try:
-                if len(parts) >= 3:
-                    a.append(float(parts[1]))
-                    b.append(float(parts[2]))
+                for c in range(1, len(parts)):
+                    cols[c-1].append(float(parts[c]))
             except (ValueError, IndexError):
                 pass
-    return a, b
+    return cols
 
 
 class LineChart(tk.Canvas):
@@ -259,9 +262,16 @@ class App(tk.Tk):
 
         def csv_path(f): return os.path.join(profile_dir, f)
         cpu_data = read_csv(csv_path('cpu.csv'))
-        mem_data = read_csv(csv_path('mem.csv'))
-        thr_data, fd_data = read_csv_multi(csv_path('threads_fd.csv'))
-        ior_data, iow_data = read_csv_multi(csv_path('io.csv'))
+        mem_cols = read_csv_multi(csv_path('mem.csv'))
+        mem_rss = mem_cols[0] if mem_cols else []
+        mem_pss = mem_cols[1] if len(mem_cols) > 1 else []
+        mem_uss = mem_cols[2] if len(mem_cols) > 2 else []
+        thr_cols = read_csv_multi(csv_path('threads_fd.csv'))
+        thr_data = thr_cols[0] if thr_cols else []
+        fd_data  = thr_cols[1] if len(thr_cols) > 1 else []
+        io_cols  = read_csv_multi(csv_path('io.csv'))
+        ior_data = io_cols[0] if io_cols else []
+        iow_data = io_cols[1] if len(io_cols) > 1 else []
         # core.csv: multi-column, auto-detect core count
         core_data = []  # [[c0%,...], [c1%,...], ...]
         core_f = csv_path('core.csv')
@@ -288,7 +298,9 @@ class App(tk.Tk):
 
         charts = [
             ('CPU Usage (%)',         cpu_data,  'cpu',  sig('cpu.csv')),
-            ('Memory RSS (KB)',       mem_data,  'mem',  sig('mem.csv')),
+            ('Memory RSS (KB)',       mem_rss,   'mem',  sig('mem.csv')),
+            ('Memory PSS (KB)',       mem_pss,   'mem',  sig('mem.csv')),
+            ('Memory USS (KB)',       mem_uss,   'mem',  sig('mem.csv')),
             ('Thread Count',          thr_data,  'thr',  sig('threads_fd.csv')),
             ('Open File Descriptors', fd_data,   'fd',   sig('threads_fd.csv')),
             ('IO Read (KB/s)',        ior_data,  'ior',  sig('io.csv')),
@@ -307,8 +319,8 @@ class App(tk.Tk):
             labels = [f'Core {i}' for i in range(n)]
             all_max = max(max(s) for s in core_data)
             chart = LineChart(grid, f'Per-Core CPU (%) — max: {all_max:.1f}', core_data, labels=labels)
-            chart.grid(row=3, column=0, padx=6, pady=6, sticky='nsew')
-            grid.grid_rowconfigure(3, weight=1)
+            chart.grid(row=4, column=0, padx=6, pady=6, sticky='nsew')
+            grid.grid_rowconfigure(4, weight=1)
 
         footer = tk.Frame(self, bg='#0d1117')
         footer.pack(fill='x', padx=16, pady=(0, 8))

@@ -48,6 +48,8 @@ int report_write(const char *dir, const char *proc_name, pid_t pid,
         "\n"
         "── 内存 ─────────────────────────────\n"
         "  RSS:       %ld KB (%.1f MB)\n"
+        "  PSS:       %ld KB (%.1f MB)\n"
+        "  USS:       %ld KB (%.1f MB)\n"
         "  采样次数:  %d\n"
         "\n"
         "── 线程 & FD ────────────────────────\n"
@@ -65,7 +67,10 @@ int report_write(const char *dir, const char *proc_name, pid_t pid,
         "========================================\n",
         proc_name, pid, duration, ctime(&(time_t){time(NULL)}),
         snap->cpu_avg, snap->cpu_peak, snap->cpu_samples,
-        snap->rss_kb, snap->rss_kb / 1024.0, snap->mem_samples,
+        snap->rss_kb, snap->rss_kb / 1024.0,
+        snap->pss_kb, snap->pss_kb / 1024.0,
+        snap->uss_kb, snap->uss_kb / 1024.0,
+        snap->mem_samples,
         snap->threads, snap->fds, snap->thrfd_samples,
         snap->io_read_kb, snap->io_write_kb, snap->io_samples,
         snap->child_count);
