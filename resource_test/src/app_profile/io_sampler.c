@@ -42,7 +42,8 @@ int io_sampler_run(pid_t pid, int count, int interval_sec,
         prev_r = rbytes;
         prev_w = wbytes;
         sleep(interval_sec);
-        if (kill(pid, 0) != 0) break;
+        { char _p[64]; snprintf(_p, sizeof(_p), "/proc/%d", pid);
+          struct stat _st; if (stat(_p, &_st) != 0 || !S_ISDIR(_st.st_mode)) break; }
     }
 
     snap->io_read_kb  = samples > 1 ? (r_sum / (samples - 1)) : 0;

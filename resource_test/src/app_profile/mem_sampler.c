@@ -66,7 +66,8 @@ int mem_sampler_run(pid_t pid, int count, int interval_sec,
         samples++;
 
         sleep(interval_sec);
-        if (kill(pid, 0) != 0) break;
+        { char _p[64]; snprintf(_p, sizeof(_p), "/proc/%d", pid);
+          struct stat _st; if (stat(_p, &_st) != 0 || !S_ISDIR(_st.st_mode)) break; }
     }
 
     snap->rss_kb      = samples > 0 ? rss_sum / samples : 0;
