@@ -12,6 +12,13 @@ volatile int g_running = 1;
 void sig_handler(int sig) { (void)sig; g_running = 0; }
 
 int proc_validate(pid_t pid) {
+    /* stat /proc/<pid> 不依赖信号权限, 避免 EPERM 误判为"进程不存在" */
+    char path[MAX_PATH];
+    snprintf(path, sizeof(path), "/proc/%d", pid);
+    struct stat st;
+    if (stat(path, &st) == 0 && S_ISDIR(st.st_mode))
+        return 0;
+    /* /proc 未挂载时回退 kill */
     return (kill(pid, 0) == 0) ? 0 : -1;
 }
 
