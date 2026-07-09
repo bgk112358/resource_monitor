@@ -13,13 +13,16 @@ endif()
 
 # ── 源文件 ──
 add_executable(dummy_app dummy_app.c)
+add_executable(rw_io_test rw_io_test.c)
 
 # ── 编译选项 ──
-target_compile_options(dummy_app PRIVATE
-    -Wall -Wextra -O2
-    -D_GNU_SOURCE
-    -D_POSIX_C_SOURCE=200809L
-)
+foreach(TARGET dummy_app rw_io_test)
+    target_compile_options(${TARGET} PRIVATE
+        -Wall -Wextra -O2
+        -D_GNU_SOURCE
+        -D_POSIX_C_SOURCE=200809L
+    )
+endforeach()
 
 # ── 链接选项 ──
 target_link_libraries(dummy_app PRIVATE
@@ -28,7 +31,7 @@ target_link_libraries(dummy_app PRIVATE
 )
 
 # ── 安装 (可选) ──
-install(TARGETS dummy_app RUNTIME DESTINATION /opt/tbox/bin)
+install(TARGETS dummy_app rw_io_test RUNTIME DESTINATION /opt/tbox/bin)
 
 # ── 编译信息 ──
 message(STATUS "Compiler: ${CMAKE_C_COMPILER}")
