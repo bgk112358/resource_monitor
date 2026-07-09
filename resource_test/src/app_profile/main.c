@@ -67,6 +67,49 @@ static void *net_thread(void *arg) {
     return NULL;
 }
 
+/* ── SELinux 探测与降级 ──────────────────────────── */
+static void selinux_probe(void) {
+    const char *enforce_path = "/sys/fs/selinux/enforce";
+    if (access(enforce_path, F_OK) != 0) {
+        printf("🔒 SELinux: 未启用\n");
+        return;
+    }
+    FILE *f = fopen(enforce_path, "r");
+    if (!f) {
+        printf("⚠ SELinux: 无法读取状态\n");
+        return;
+    }
+    char val = (char)fgetc(f);
+    fclose(f);
+
+    if (val == '0') {
+        printf("🔒 SELinux: 已是 Permissive\n");
+        return;
+    }
+    if (val != '1') {
+        printf("⚠ SELinux: 未知状态\n");
+        return;
+    }
+
+    /* Enforcing → 尝试切 Permissive */
+    f = fopen(enforce_path, "w");
+    if (f) {
+        fputc('0', f);
+        fclose(f);
+        f = fopen(enforce_path, "r");
+        if (f) {
+            val = (char)fgetc(f);
+            fclose(f);
+            if (val == '0')
+                printf("🔒 SELinux: Enforcing → 已切换为 Permissive\n");
+            else
+                printf("⚠ SELinux: 写入成功但状态未变 (%c)\n", val);
+        }
+    } else {
+        printf("⚠ SELinux: Enforcing, 无法切换 (需 root), IO 数据可能为 0\n");
+    }
+}
+
 /* ── 主函数 ────────────────────────────────────── */
 #define APP_VERSION "26.0.1"
 #define DEFAULT_WAIT_SEC 3
@@ -138,6 +181,8 @@ int main(int argc, char *argv[]) {
 
     signal(SIGINT, sig_handler);
     signal(SIGTERM, sig_handler);
+
+    selinux_probe();
 
     char *outdir = report_mk_outdir(out_prefix, pid);
     printf("📊 采集进程 PID=%d 的资源数据, 持续 %ds (并发)\n", pid, duration);
