@@ -31,7 +31,7 @@ def _get_csv_verify():
 
 CSV_VERIFY_BIN = _get_csv_verify()
 
-EXPECTED_VERSION = "26.0.1"
+EXPECTED_VERSION = "26.0.2"
 
 def check_csv_version(profile_dir):
     """读取所有 CSV 的 # VERSION: 行, 逐文件比对期望版本。返回 None=全部一致, str=警告"""
@@ -295,7 +295,7 @@ class BarChart(tk.Canvas):
 class App(tk.Tk):
     def __init__(self, profile_dir):
         super().__init__()
-        self.title("TBox Resource Profile v26.0.1")
+        self.title("TBox Resource Profile v26.0.2")
         self.configure(bg='#0d1117')
 
         proc_name = "unknown"
@@ -308,7 +308,7 @@ class App(tk.Tk):
 
         header = tk.Frame(self, bg='#0d1117')
         header.pack(fill='x', padx=16, pady=(12, 4))
-        tk.Label(header, text=f"TBox Resource Profile v26.0.1 — {proc_name}",
+        tk.Label(header, text=f"TBox Resource Profile v26.0.2 — {proc_name}",
                  fg='#f0f6fc', bg='#0d1117', font=('', 13, 'bold')).pack(anchor='w')
         ver_warn = check_csv_version(profile_dir)
         if ver_warn:
@@ -429,7 +429,7 @@ class App(tk.Tk):
 
 if __name__ == '__main__':
     if len(sys.argv) == 2 and sys.argv[1] in ('-v', '--version'):
-        print('plot_gui.py v26.0.1')
+        print('plot_gui.py v26.0.2')
         sys.exit(0)
     if len(sys.argv) < 2:
         print(f"用法: {sys.argv[0]} <profile_dir>")

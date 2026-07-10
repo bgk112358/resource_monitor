@@ -111,7 +111,7 @@ static void selinux_probe(void) {
 }
 
 /* ── 主函数 ────────────────────────────────────── */
-#define APP_VERSION "26.0.1"
+#define APP_VERSION "26.0.2"
 #define DEFAULT_WAIT_SEC 3
 
 int main(int argc, char *argv[]) {
